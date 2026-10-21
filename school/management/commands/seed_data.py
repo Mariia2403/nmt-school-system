@@ -1,0 +1,390 @@
+"""
+Fill the database with realistic test data.
+
+Usage:
+    python manage.py seed_data          # only if the database is empty
+    python manage.py seed_data --clear  # delete all school data and create it again
+
+Dates are calculated from "today", so the data always looks fresh:
+the school year starts on 1 September, past lessons are "held",
+future lessons are "planned".
+"""
+import random
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+
+from django.core.management.base import BaseCommand
+from django.db import transaction
+from django.utils import timezone
+
+from school.models import (
+    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary,
+    Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
+)
+
+# Surnames without gender forms, so they fit both boys and girls
+LAST_NAMES = [
+    "Шевченко", "Коваленко", "Бондаренко", "Ткаченко", "Кравченко", "Олійник", "Шевчук",
+    "Поліщук", "Лисенко", "Марченко", "Савченко", "Руденко", "Мороз", "Павленко",
+    "Кузьменко", "Петренко", "Ковальчук", "Гончаренко", "Литвиненко", "Тимошенко",
+    "Мельничук", "Романюк", "Кириленко", "Демченко", "Ярошенко", "Гуменюк", "Нестеренко",
+    "Остапенко", "Василенко", "Захарченко",
+]
+BOY_NAMES = ["Олександр", "Максим", "Артем", "Дмитро", "Назар", "Богдан", "Іван", "Матвій", "Денис", "Андрій"]
+GIRL_NAMES = ["Софія", "Анна", "Марія", "Вікторія", "Дарина", "Анастасія", "Поліна", "Олена", "Юлія", "Катерина"]
+MOTHER_NAMES = ["Олена Петрівна", "Наталія Іванівна", "Ірина Василівна", "Тетяна Миколаївна", "Світлана Олегівна"]
+FATHER_NAMES = ["Сергій Іванович", "Андрій Петрович", "Олег Васильович", "Віктор Миколайович", "Ігор Степанович"]
+
+TOPICS = {
+    "Українська мова": ["Фонетика", "Орфоепія", "Лексикологія", "Будова слова", "Іменник", "Прикметник",
+                        "Дієслово", "Дієприкметник", "Синтаксис речення", "Пунктуація", "Пряма мова"],
+    "Математика": ["Відсотки", "Лінійні рівняння", "Квадратні рівняння", "Нерівності", "Функції",
+                   "Прогресії", "Тригонометрія", "Планіметрія", "Стереометрія", "Логарифми", "Похідна"],
+    "Історія України": ["Київська Русь", "Галицько-Волинська держава", "Козацька доба", "Гетьманщина",
+                        "Українська революція 1917–1921", "Голодомор", "Друга світова війна", "Незалежність"],
+    "Англійська мова": ["Present Tenses", "Past Tenses", "Future Forms", "Passive Voice", "Conditionals",
+                        "Reported Speech", "Modal Verbs", "Reading Strategies", "Use of English"],
+}
+
+
+def phone():
+    return "+380" + random.choice(["50", "63", "66", "67", "68", "73", "93", "97", "99"]) + f"{random.randint(0, 9999999):07d}"
+
+
+def aware(day, at):
+    """Join a date and a time into a datetime with the Kyiv time zone."""
+    return timezone.make_aware(datetime.combine(day, at))
+
+
+def add_month(day):
+    """Return the first day of the next month."""
+    return date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+
+
+def money(value):
+    return Decimal(value).quantize(Decimal("0.01"))
+
+
+class Command(BaseCommand):
+    help = "Заповнює базу даних реалістичними тестовими даними"
+
+    def add_arguments(self, parser):
+        parser.add_argument("--clear", action="store_true", help="Видалити всі дані школи перед заповненням")
+        parser.add_argument("--seed", type=int, default=42, help="Число для генератора (ті самі дані щоразу)")
+
+    @transaction.atomic  # if something fails, nothing is saved
+    def handle(self, *args, **options):
+        random.seed(options["seed"])
+
+        if options["clear"]:
+            self.clear()
+        elif Student.objects.exists():
+            self.stdout.write(self.style.WARNING(
+                "У базі вже є дані. Запустіть з --clear, щоб очистити і заповнити заново."
+            ))
+            return
+
+        self.today = timezone.localdate()
+        # The school year starts on 1 September
+        year = self.today.year if self.today.month >= 9 else self.today.year - 1
+        self.year_start = date(year, 9, 1)
+
+        self.create_subjects_and_teachers()
+        self.create_tariffs()
+        self.create_groups()
+        self.create_students()
+        self.create_contracts()
+        self.create_lessons_and_attendance()
+        self.create_tests()
+        self.create_invoices_and_payments()
+        self.create_refunds()
+        self.create_salaries()
+        self.create_expenses()
+        self.print_summary()
+
+    # ───────────────────────── Steps ─────────────────────────
+
+    def clear(self):
+        # Order is important: first records that depend on others (because of PROTECT)
+        for model in [Payment, Refund, Invoice, Attendance, TestResult, Test, Lesson,
+                      Contract, Salary, Expense, StudyGroup, Tariff, Student, Teacher, Subject]:
+            model.objects.all().delete()
+        self.stdout.write("Старі дані видалено.")
+
+    def create_subjects_and_teachers(self):
+        names = ["Українська мова", "Математика", "Історія України", "Англійська мова", "Біологія"]
+        self.subjects = {name: Subject.objects.create(name=name) for name in names}
+
+        teachers_data = [
+            ("Коваленко", "Ірина", "400"),
+            ("Бондар", "Олег", "420"),
+            ("Мельник", "Тетяна", "380"),
+            ("Гриценко", "Марина", "450"),
+        ]
+        self.teachers = [
+            Teacher.objects.create(last_name=ln, first_name=fn, phone=phone(), rate_per_lesson=Decimal(rate))
+            for ln, fn, rate in teachers_data
+        ]
+
+    def create_tariffs(self):
+        self.tariffs = [
+            Tariff.objects.create(name="Стандарт", monthly_price=Decimal("2400"), lessons_per_month=8),
+            Tariff.objects.create(name="Інтенсив", monthly_price=Decimal("3200"), lessons_per_month=12),
+            Tariff.objects.create(
+                name="Гарантія 170+", monthly_price=Decimal("3800"), lessons_per_month=8,
+                has_guarantee=True, guarantee_min_score=170, refund_pct=Decimal("30"),
+            ),
+        ]
+        # An old tariff, not used for new contracts (to show the "is_active" flag)
+        Tariff.objects.create(name="Базовий (архів)", monthly_price=Decimal("2000"),
+                              lessons_per_month=8, is_active=False)
+
+    def create_groups(self):
+        start = self.year_start + timedelta(days=(7 - self.year_start.weekday()) % 7)  # first Monday
+        end = date(self.year_start.year + 1, 5, 31)
+        t = self.teachers
+        # (name, subject, teacher, level, weekdays (0 = Monday), start time)
+        data = [
+            ("УКР-1", "Українська мова", t[0], StudyGroup.Level.MEDIUM, [0, 3], time(16, 0)),
+            ("УКР-2", "Українська мова", t[0], StudyGroup.Level.ADVANCED, [1, 4], time(17, 30)),
+            ("МАТ-1", "Математика", t[1], StudyGroup.Level.BASIC, [0, 2], time(18, 0)),
+            ("МАТ-2", "Математика", t[1], StudyGroup.Level.INTENSIVE, [1, 3], time(16, 0)),
+            ("ІСТ-1", "Історія України", t[2], StudyGroup.Level.MEDIUM, [2, 5], time(10, 0)),
+            ("АНГ-1", "Англійська мова", t[3], StudyGroup.Level.MEDIUM, [4, 5], time(12, 0)),
+        ]
+        self.groups = []
+        self.schedule = {}  # group id -> (weekdays, time)
+        for name, subject, teacher, level, days, at in data:
+            group = StudyGroup.objects.create(
+                name=name, subject=self.subjects[subject], teacher=teacher, level=level,
+                start_date=start, end_date=end, max_students=12,
+            )
+            self.groups.append(group)
+            self.schedule[group.id] = (days, at)
+
+    def create_students(self):
+        self.students = []
+        self.skill = {}  # student id -> "level" of the student, used for test scores
+        for last_name in LAST_NAMES:
+            is_girl = random.random() < 0.55
+            first_name = random.choice(GIRL_NAMES if is_girl else BOY_NAMES)
+            if random.random() < 0.7:
+                parent = f"{last_name} {random.choice(MOTHER_NAMES)}"
+            else:
+                parent = f"{last_name} {random.choice(FATHER_NAMES)}"
+            student = Student.objects.create(
+                last_name=last_name, first_name=first_name, phone=phone(),
+                grade=random.choice([10, 11, 11, 11]),
+                parent_name=parent, parent_phone=phone(),
+                registered_at=self.year_start - timedelta(days=random.randint(0, 25)),
+            )
+            self.students.append(student)
+            self.skill[student.id] = random.randint(120, 180)
+
+    def create_contracts(self):
+        self.contracts = []
+        taken = {g.id: 0 for g in self.groups}
+        active_tariffs = self.tariffs  # only active tariffs
+
+        for student in self.students:
+            # Every student studies 1 or 2 subjects
+            wanted = 1 if random.random() < 0.5 else 2
+            subjects_used = set()
+            for group in random.sample(self.groups, len(self.groups)):
+                if wanted == 0:
+                    break
+                if group.subject_id in subjects_used or taken[group.id] >= group.max_students:
+                    continue
+                start = group.start_date + timedelta(days=random.choice([0, 0, 0, 3, 7, 14, 21, 30]))
+                contract = Contract.objects.create(
+                    student=student, group=group,
+                    tariff=random.choices(active_tariffs, weights=[5, 2, 3])[0],
+                    start_date=start,
+                    discount_pct=Decimal(random.choice([0, 0, 0, 0, 0, 10, 15])),
+                )
+                self.contracts.append(contract)
+                taken[group.id] += 1
+                subjects_used.add(group.subject_id)
+                wanted -= 1
+
+        # A few contracts with other statuses, to make the data realistic
+        early = [c for c in self.contracts if c.start_date == c.group.start_date]
+        for contract in random.sample(early, 2):
+            contract.status = Contract.Status.TERMINATED
+            contract.end_date = contract.start_date + timedelta(days=random.randint(20, 35))
+            contract.save()
+        suspended = random.choice([c for c in self.contracts if c.status == Contract.Status.ACTIVE])
+        suspended.status = Contract.Status.SUSPENDED
+        suspended.save()
+
+    def members_on(self, group, day):
+        """Students who studied in the group on this day."""
+        return [
+            c.student for c in self.contracts
+            if c.group_id == group.id and c.start_date <= day
+            and (c.end_date is None or c.end_date >= day)
+            and c.status != Contract.Status.SUSPENDED
+        ]
+
+    def create_lessons_and_attendance(self):
+        lessons, attendance = [], []
+        last_day = self.today + timedelta(days=40)
+        now = timezone.now()
+        statuses = [Attendance.Status.PRESENT] * 16 + [Attendance.Status.LATE, Attendance.Status.ABSENT,
+                                                      Attendance.Status.ABSENT, Attendance.Status.EXCUSED]
+        for group in self.groups:
+            days, at = self.schedule[group.id]
+            topics = TOPICS[group.subject.name]
+            day, number = group.start_date, 0
+            while day <= last_day:
+                if day.weekday() in days:
+                    starts_at = aware(day, at)
+                    if starts_at < now:
+                        status = Lesson.Status.CANCELLED if random.random() < 0.04 else Lesson.Status.HELD
+                    else:
+                        status = Lesson.Status.PLANNED
+                    # Sometimes another teacher replaces the group teacher
+                    teacher = group.teacher
+                    if random.random() < 0.03:
+                        teacher = random.choice([t for t in self.teachers if t != group.teacher])
+                    lesson = Lesson(group=group, teacher=teacher, starts_at=starts_at,
+                                    topic=topics[number % len(topics)], status=status)
+                    lessons.append(lesson)
+                    number += 1
+                day += timedelta(days=1)
+
+        Lesson.objects.bulk_create(lessons)  # one big INSERT instead of hundreds
+
+        for lesson in lessons:
+            if lesson.status != Lesson.Status.HELD:
+                continue
+            for student in self.members_on(lesson.group, lesson.starts_at.date()):
+                attendance.append(Attendance(lesson=lesson, student=student, status=random.choice(statuses)))
+        Attendance.objects.bulk_create(attendance)
+
+    def score_for(self, student, test_day):
+        """Test score: student level + progress over time + some luck."""
+        progress = (test_day - self.year_start).days // 15
+        return max(100, min(200, self.skill[student.id] + progress + random.randint(-12, 12)))
+
+    def create_tests(self):
+        results = []
+        for group in self.groups:
+            plan = [
+                ("Вхідна діагностика", Test.Kind.DIAGNOSTIC, group.start_date + timedelta(days=3)),
+                ("Тематичний тест №1", Test.Kind.TOPIC, group.start_date + timedelta(days=35)),
+            ]
+            for title, kind, day in plan:
+                if day > self.today:
+                    continue
+                test = Test.objects.create(subject=group.subject, group=group,
+                                           title=f"{title} ({group.name})", kind=kind, held_at=day)
+                for student in self.members_on(group, day):
+                    results.append(TestResult(test=test, student=student, score=self.score_for(student, day)))
+
+        # School-wide trial NMT in Ukrainian for all groups of the subject (group is empty)
+        trial_day = self.year_start + timedelta(days=46)
+        if trial_day <= self.today:
+            subject = self.subjects["Українська мова"]
+            test = Test.objects.create(subject=subject, group=None, title="Пробне НМТ: українська мова",
+                                       kind=Test.Kind.TRIAL, held_at=trial_day)
+            seen = set()
+            for group in self.groups:
+                if group.subject_id != subject.id:
+                    continue
+                for student in self.members_on(group, trial_day):
+                    if student.id not in seen:
+                        seen.add(student.id)
+                        results.append(TestResult(test=test, student=student,
+                                                  score=self.score_for(student, trial_day)))
+        TestResult.objects.bulk_create(results)
+
+    def create_invoices_and_payments(self):
+        current_month = self.today.replace(day=1)
+        for contract in self.contracts:
+            month = contract.start_date.replace(day=1)
+            last = contract.end_date or self.today
+            while month <= min(current_month, last):
+                # amount is calculated automatically (tariff price - discount)
+                invoice = Invoice.objects.create(contract=contract, period_month=month,
+                                                 due_date=month.replace(day=10))
+                self.pay(invoice, is_current=(month == current_month))
+                month = add_month(month)
+
+    def pay(self, invoice, is_current):
+        r = random.random()
+        if is_current:
+            # Current month: some pay fully, some partly, some have not paid yet
+            part = 1 if r < 0.45 else (0.5 if r < 0.65 else 0)
+        else:
+            # Past months: most students paid, a few have a debt
+            part = 1 if r < 0.88 else 0.5
+        if part == 0:
+            return
+        day = invoice.period_month + timedelta(days=random.randint(0, 11))
+        day = min(day, self.today)
+        method = random.choices(list(Payment.Method), weights=[2, 4, 2, 3])[0]
+        # reserve_amount is calculated automatically for guarantee tariffs
+        Payment.objects.create(invoice=invoice, amount=money(invoice.amount * Decimal(part)),
+                               paid_at=aware(day, time(random.randint(9, 19), random.choice([0, 15, 30, 45]))),
+                               method=method)
+
+    def create_refunds(self):
+        for contract in self.contracts:
+            if contract.status != Contract.Status.TERMINATED:
+                continue
+            paid_day = contract.end_date + timedelta(days=5)
+            is_paid = paid_day <= self.today
+            Refund.objects.create(
+                contract=contract, reason=Refund.Reason.EARLY_TERMINATION,
+                amount=money(contract.monthly_amount() / 2),
+                status=Refund.Status.PAID if is_paid else Refund.Status.APPROVED,
+                created_at=contract.end_date, paid_at=paid_day if is_paid else None,
+            )
+        # One small request that is still waiting
+        contract = random.choice([c for c in self.contracts if c.status == Contract.Status.ACTIVE])
+        Refund.objects.create(contract=contract, reason=Refund.Reason.OVERPAYMENT, amount=Decimal("200"),
+                              created_at=self.today - timedelta(days=2))
+
+    def create_salaries(self):
+        current_month = self.today.replace(day=1)
+        month = self.year_start
+        while month <= current_month:
+            for teacher in self.teachers:
+                # base_amount is empty -> it is calculated from held lessons
+                paid_at = None if month == current_month else add_month(month) + timedelta(days=4)
+                if paid_at and paid_at > self.today:
+                    paid_at = None
+                Salary.objects.create(teacher=teacher, period_month=month,
+                                      bonus=Decimal(random.choice([0, 0, 0, 500, 1000])), paid_at=paid_at)
+            month = add_month(month)
+
+    def create_expenses(self):
+        month = self.year_start
+        while month <= self.today:
+            items = [
+                (Expense.Category.RENT, "18000", 1, "Оренда приміщення"),
+                (Expense.Category.UTILITIES, str(random.randint(2500, 4000)), 15, "Світло, вода, інтернет"),
+                (Expense.Category.MARKETING, str(random.randint(3000, 7000)), 5, "Реклама в Instagram і TikTok"),
+                (Expense.Category.MATERIALS, str(random.randint(1500, 3500)), 8, "Друк збірників і пробних тестів"),
+            ]
+            if month == self.year_start:
+                items.append((Expense.Category.EQUIPMENT, "24000", 3, "Проєктор і дошка"))
+                items.append((Expense.Category.SOFTWARE, "1200", 3, "Підписка на сервіс онлайн-тестів"))
+            for category, amount, day, comment in items:
+                spent = month.replace(day=day)
+                if spent <= self.today:
+                    Expense.objects.create(category=category, amount=Decimal(amount), spent_at=spent, comment=comment)
+            month = add_month(month)
+
+    def print_summary(self):
+        rows = [
+            ("Предмети", Subject), ("Викладачі", Teacher), ("Тарифи", Tariff), ("Учні", Student),
+            ("Групи", StudyGroup), ("Договори", Contract), ("Заняття", Lesson),
+            ("Відвідуваність", Attendance), ("Тести", Test), ("Результати тестів", TestResult),
+            ("Рахунки", Invoice), ("Оплати", Payment), ("Повернення", Refund),
+            ("Зарплати", Salary), ("Витрати", Expense),
+        ]
+        self.stdout.write(self.style.SUCCESS("Тестові дані створено:"))
+        for label, model in rows:
+            self.stdout.write(f"  {label}: {model.objects.count()}")
