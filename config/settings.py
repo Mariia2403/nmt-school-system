@@ -1,6 +1,6 @@
 """
-Налаштування проєкту «Інформаційна система школи підготовки до НМТ».
-Секретні дані (ключ, пароль БД) читаються з файлу .env.
+Settings for the project "Information system of an NMT preparation school".
+Secret data (secret key, database password) is read from the .env file.
 """
 import os
 from pathlib import Path
@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Завантажуємо змінні з файлу .env у корені проєкту
+# Load variables from the .env file in the project root
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
@@ -17,7 +17,7 @@ DEBUG = os.environ.get("DJANGO_DEBUG", "False") == "True"
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
 
-# Застосунки
+# Applications
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -25,8 +25,8 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "django.contrib.humanize",  # гарне форматування чисел (1 000 000)
-    "school",                   # наш застосунок
+    "django.contrib.humanize",  # nice number formatting
+    "school",                   # our application
 ]
 
 MIDDLEWARE = [
@@ -44,7 +44,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],
+        "DIRS": [BASE_DIR / "templates"],  # our templates folder in the project root
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -59,7 +59,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 
 
-# База даних PostgreSQL
+# PostgreSQL database
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -72,7 +72,7 @@ DATABASES = {
 }
 
 
-# Перевірка складності паролів
+# Password rules
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -81,14 +81,20 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Мова і час
+# Login and logout
+LOGIN_URL = "login"                      # where to send users who are not logged in
+LOGIN_REDIRECT_URL = "school:dashboard"  # page after a successful login
+LOGOUT_REDIRECT_URL = "login"            # page after logout
+
+
+# Language and time
 LANGUAGE_CODE = "uk"
 TIME_ZONE = "Europe/Kyiv"
 USE_I18N = True
 USE_TZ = True
 
 
-# Статичні файли (CSS, JS, картинки)
+# Static files (CSS, JS, images)
 STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

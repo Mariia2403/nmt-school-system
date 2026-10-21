@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Головна — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0">Головна</h1>
+  <span class="text-muted">{{ today|date:"j E Y, l" }}</span>
+</div>
+
+<!-- Main numbers -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-people"></i> Активні учні</div>
+        <div class="display-6">{{ active_students }}</div>
+        <div class="small text-muted">з діючим договором</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-collection"></i> Групи, що навчаються</div>
+        <div class="display-6">{{ active_groups }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100 border-success">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-cash-stack"></i> Оплати за {{ today|date:"F"|lower }}</div>
+        <div class="display-6 text-success">{{ payments_sum|floatformat:"0g" }} ₴</div>
+        <div class="small text-muted">{{ payments_count }} оплат</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100 border-danger">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-exclamation-triangle"></i> Прострочені борги</div>
+        <div class="display-6 text-danger">{{ total_debt|floatformat:"0g" }} ₴</div>
+        <div class="small text-muted">боржників: {{ debtors_count }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-receipt"></i> Витрати за {{ today|date:"F"|lower }}</div>
+        <div class="h4 mb-0">{{ expenses_sum|floatformat:"0g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-shield-check"></i> Резерв під гарантію (усього)</div>
+        <div class="h4 mb-0">{{ reserve_total|floatformat:"0g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- Lessons -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-calendar-event"></i> Заняття сьогодні</div>
+      <ul class="list-group list-group-flush">
+        {% for lesson in today_lessons %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.name }}
+              <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
+              <div class="small text-muted">{{ lesson.teacher }}</div>
+            </div>
+            <span class="badge text-bg-{% if lesson.status == 'held' %}success{% elif lesson.status == 'cancelled' %}secondary{% else %}primary{% endif %}">
+              {{ lesson.get_status_display }}
+            </span>
+          </li>
+        {% empty %}
+          <li class="list-group-item text-muted">Сьогодні занять немає.</li>
+        {% endfor %}
+      </ul>
+      <div class="card-header bg-white fw-semibold border-top"><i class="bi bi-calendar-week"></i> Найближчі заняття</div>
+      <ul class="list-group list-group-flush">
+        {% for lesson in next_lessons %}
+          <li class="list-group-item">
+            <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> · {{ lesson.group.name }}
+            <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
+          </li>
+        {% empty %}
+          <li class="list-group-item text-muted">Запланованих занять немає.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  <!-- Debtors -->
+  <div class="col-lg-5">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-person-exclamation"></i> Найбільші боржники</div>
+      <ul class="list-group list-group-flush">
+        {% for student, debt in top_debtors %}
+          <li class="list-group-item d-flex justify-content-between">
+            <span>{{ student }}</span>
+            <span class="text-danger fw-semibold">{{ debt|floatformat:"0g" }} ₴</span>
+          </li>
+        {% empty %}
+          <li class="list-group-item text-muted">Боржників немає 🎉</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
