@@ -81,7 +81,9 @@
           {% for c in contracts %}
             <tr>
               <td>{{ c.pk }}</td>
-              <td>{{ c.group.name }} <div class="small text-muted">{{ c.group.subject }}</div></td>
+              <td>{{ c.group.full_name }}
+                <div class="small text-muted">{{ c.group.get_level_display }} · {{ c.group.schedule_text }}</div>
+              </td>
               <td>{{ c.group.teacher }}</td>
               <td>{{ c.tariff.name }}</td>
               <td class="text-nowrap">{{ c.start_date|date:"d.m.Y" }} — {{ c.end_date|date:"d.m.Y"|default:"…" }}</td>
@@ -110,7 +112,7 @@
           {% for a in attendance %}
             <tr>
               <td class="text-nowrap">{{ a.lesson.starts_at|date:"d.m.Y H:i" }}</td>
-              <td>{{ a.lesson.group.name }}</td>
+              <td>{{ a.lesson.group.full_name }}</td>
               <td>{{ a.lesson.topic|default:"—" }}</td>
               <td>
                 <span class="badge text-bg-{% if a.status == 'present' %}success{% elif a.status == 'late' %}warning{% elif a.status == 'absent' %}danger{% else %}secondary{% endif %}">
@@ -157,7 +159,7 @@
           {% for inv in invoices %}
             <tr class="{% if inv.is_overdue %}table-danger{% elif inv.is_waiting %}table-warning{% endif %}">
               <td class="text-nowrap">{{ inv.period_month|date:"F Y" }}</td>
-              <td>{{ inv.contract.group.name }}</td>
+              <td>{{ inv.contract.group.full_name }}</td>
               <td class="text-end">{{ inv.amount|floatformat:"0g" }} ₴</td>
               <td class="text-end">{{ inv.paid_sum|floatformat:"0g" }} ₴</td>
               <td class="text-end fw-semibold {% if inv.debt_value %}text-danger{% endif %}">

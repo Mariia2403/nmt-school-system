@@ -90,7 +90,7 @@
             </td>
             <td>
               {% for contract in student.active_contracts %}
-                <span class="badge text-bg-light border">{{ contract.group.name }}</span>
+                <span class="badge text-bg-light border">{{ contract.group.full_name }}</span>
               {% empty %}
                 <span class="text-muted">—</span>
               {% endfor %}

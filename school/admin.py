@@ -15,7 +15,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .models import (
-    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary,
+    Attendance, Contract, Expense, GroupSchedule, Invoice, Lesson, Payment, Refund, Salary,
     Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
 )
 
@@ -33,7 +33,17 @@ class ContractInline(admin.TabularInline):
     extra = 0
     fields = ["group", "tariff", "status", "start_date", "end_date", "discount_pct"]
     autocomplete_fields = ["group", "tariff"]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("group__subject", "tariff")
     show_change_link = True  # link to open the full contract page
+
+
+class GroupScheduleInline(admin.TabularInline):
+    """Weekly schedule on the group page: one row = one lesson in the week."""
+    model = GroupSchedule
+    extra = 1  # one empty row, ready for a new day
+    fields = ["weekday", "start_time", "end_time"]
 
 
 class LessonInline(admin.TabularInline):
@@ -155,16 +165,20 @@ class TariffAdmin(admin.ModelAdmin):
 
 @admin.register(StudyGroup)
 class StudyGroupAdmin(admin.ModelAdmin):
-    list_display = ["name", "subject", "teacher", "level", "students_count", "max_students", "start_date", "end_date"]
+    list_display = [
+        "full_name", "teacher", "level", "schedule", "students_count", "max_students", "start_date", "end_date",
+    ]
     list_filter = ["subject", "level", "teacher"]
     search_fields = ["name", "subject__name", "teacher__last_name"]
     autocomplete_fields = ["subject", "teacher"]
-    inlines = [LessonInline]
+    # The schedule goes first: it is short and it is needed more often than the list of lessons
+    inlines = [GroupScheduleInline, LessonInline]
 
     def get_queryset(self, request):
         return (
             super().get_queryset(request)
             .select_related("subject", "teacher")
+            .prefetch_related("schedule")  # schedule of all groups in ONE extra query
             .annotate(
                 students_count=Count(
                     "contracts", filter=Q(contracts__status=Contract.Status.ACTIVE), distinct=True
@@ -172,9 +186,34 @@ class StudyGroupAdmin(admin.ModelAdmin):
             )
         )
 
+    @admin.display(description="Група", ordering="subject__name")
+    def full_name(self, obj):
+        return obj.full_name
+
+    @admin.display(description="Розклад")
+    def schedule(self, obj):
+        return obj.schedule_text
+
     @admin.display(description="Учнів", ordering="students_count")
     def students_count(self, obj):
         return obj.students_count
+
+
+@admin.register(GroupSchedule)
+class GroupScheduleAdmin(admin.ModelAdmin):
+    """The schedule of the whole school in one list (it is easy to find free rooms and hours)."""
+    list_display = ["weekday", "start_time", "end_time", "group", "teacher"]
+    list_filter = ["weekday", "group__subject", "group__teacher"]
+    search_fields = ["group__name", "group__subject__name", "group__teacher__last_name"]
+    autocomplete_fields = ["group"]
+    ordering = ["weekday", "start_time"]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("group__subject", "group__teacher")
+
+    @admin.display(description="Викладач", ordering="group__teacher__last_name")
+    def teacher(self, obj):
+        return obj.group.teacher
 
 
 @admin.register(Lesson)
@@ -188,7 +227,7 @@ class LessonAdmin(admin.ModelAdmin):
     actions = ["mark_all_present"]
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("group", "group__subject", "teacher")
+        return super().get_queryset(request).select_related("group__subject", "teacher")
 
     @admin.action(description="Відмітити всіх учнів групи присутніми")
     def mark_all_present(self, request, queryset):
@@ -212,7 +251,7 @@ class AttendanceAdmin(admin.ModelAdmin):
     autocomplete_fields = ["lesson", "student"]
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("lesson__group", "student")
+        return super().get_queryset(request).select_related("lesson__group__subject", "student")
 
 
 @admin.register(Test)
@@ -227,7 +266,7 @@ class TestAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return (
             super().get_queryset(request)
-            .select_related("subject", "group")
+            .select_related("subject", "group__subject")
             .annotate(results_count=Count("results"))
         )
 
@@ -259,7 +298,7 @@ class ContractAdmin(admin.ModelAdmin):
     actions = ["create_invoices_for_this_month"]
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("student", "group", "tariff")
+        return super().get_queryset(request).select_related("student", "group__subject", "tariff")
 
     @admin.action(description="Створити рахунки на поточний місяць (для діючих договорів)")
     def create_invoices_for_this_month(self, request, queryset):
@@ -303,7 +342,7 @@ class InvoiceAdmin(admin.ModelAdmin):
         # Calculate the paid sum in SQL for all invoices at once
         return (
             super().get_queryset(request)
-            .select_related("contract__student", "contract__group")
+            .select_related("contract__student", "contract__group__subject")
             .annotate(
                 paid_sum=Coalesce(
                     Sum("payments__amount"), Value(Decimal("0")),
@@ -349,7 +388,7 @@ class RefundAdmin(admin.ModelAdmin):
     autocomplete_fields = ["contract"]
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related("contract__student", "contract__group")
+        return super().get_queryset(request).select_related("contract__student", "contract__group__subject")
 
 
 @admin.register(Expense)

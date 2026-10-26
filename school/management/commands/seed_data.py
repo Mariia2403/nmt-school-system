@@ -18,9 +18,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from school.models import (
-    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary,
+    Attendance, Contract, Expense, GroupSchedule, Invoice, Lesson, Payment, Refund, Salary,
     Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
 )
+
+LESSON_MINUTES = 90  # one lesson lasts 1.5 hours
 
 # Surnames without gender forms, so they fit both boys and girls
 LAST_NAMES = [
@@ -59,6 +61,11 @@ def aware(day, at):
 def add_month(day):
     """Return the first day of the next month."""
     return date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+
+
+def plus_minutes(at, minutes):
+    """Add minutes to a time: 18:00 + 90 -> 19:30."""
+    return (datetime.combine(date.today(), at) + timedelta(minutes=minutes)).time()
 
 
 def money(value):
@@ -107,7 +114,8 @@ class Command(BaseCommand):
     def clear(self):
         # Order is important: first records that depend on others (because of PROTECT)
         for model in [Payment, Refund, Invoice, Attendance, TestResult, Test, Lesson,
-                      Contract, Salary, Expense, StudyGroup, Tariff, Student, Teacher, Subject]:
+                      Contract, Salary, Expense, GroupSchedule, StudyGroup, Tariff, Student,
+                      Teacher, Subject]:
             model.objects.all().delete()
         self.stdout.write("Старі дані видалено.")
 
@@ -145,24 +153,29 @@ class Command(BaseCommand):
         start = self.year_start + timedelta(days=(7 - self.year_start.weekday()) % 7)  # first Monday
         end = date(self.year_start.year + 1, 5, 31)
         t = self.teachers
-        # (name, subject, teacher, level, weekdays (0 = Monday), start time)
+        # (short name, subject, teacher, level, weekdays (1 = Monday ... 7 = Sunday), start time)
+        # The full name is built automatically: "Математика · група 1"
         data = [
-            ("УКР-1", "Українська мова", t[0], StudyGroup.Level.MEDIUM, [0, 3], time(16, 0)),
-            ("УКР-2", "Українська мова", t[0], StudyGroup.Level.ADVANCED, [1, 4], time(17, 30)),
-            ("МАТ-1", "Математика", t[1], StudyGroup.Level.BASIC, [0, 2], time(18, 0)),
-            ("МАТ-2", "Математика", t[1], StudyGroup.Level.ADVANCED, [1, 3], time(16, 0)),
-            ("ІСТ-1", "Історія України", t[2], StudyGroup.Level.MEDIUM, [2, 5], time(10, 0)),
-            ("АНГ-1", "Англійська мова", t[3], StudyGroup.Level.MEDIUM, [4, 5], time(12, 0)),
+            ("група 1", "Українська мова", t[0], StudyGroup.Level.MEDIUM, [1, 4], time(16, 0)),
+            ("група 2", "Українська мова", t[0], StudyGroup.Level.ADVANCED, [2, 5], time(17, 30)),
+            ("група 1", "Математика", t[1], StudyGroup.Level.BASIC, [1, 3], time(18, 0)),
+            ("група 2", "Математика", t[1], StudyGroup.Level.ADVANCED, [2, 4], time(16, 0)),
+            ("група 1", "Історія України", t[2], StudyGroup.Level.MEDIUM, [3, 6], time(10, 0)),
+            ("група 1", "Англійська мова", t[3], StudyGroup.Level.MEDIUM, [5, 6], time(12, 0)),
         ]
         self.groups = []
-        self.schedule = {}  # group id -> (weekdays, time)
         for name, subject, teacher, level, days, at in data:
             group = StudyGroup.objects.create(
                 name=name, subject=self.subjects[subject], teacher=teacher, level=level,
                 start_date=start, end_date=end, max_students=12,
             )
+            # The schedule is saved in the database (table group_schedule),
+            # and lessons are created from it below
+            for day in days:
+                GroupSchedule.objects.create(
+                    group=group, weekday=day, start_time=at, end_time=plus_minutes(at, LESSON_MINUTES),
+                )
             self.groups.append(group)
-            self.schedule[group.id] = (days, at)
 
     def create_students(self):
         self.students = []
@@ -237,12 +250,13 @@ class Command(BaseCommand):
         statuses = [Attendance.Status.PRESENT] * 16 + [Attendance.Status.LATE, Attendance.Status.ABSENT,
                                                       Attendance.Status.ABSENT, Attendance.Status.EXCUSED]
         for group in self.groups:
-            days, at = self.schedule[group.id]
+            # Read the schedule from the database: {weekday: start time}
+            slots = {slot.weekday: slot.start_time for slot in group.schedule.all()}
             topics = TOPICS[group.subject.name]
             day, number = group.start_date, 0
             while day <= last_day:
-                if day.weekday() in days:
-                    starts_at = aware(day, at)
+                if day.isoweekday() in slots:  # isoweekday(): Monday = 1, like in the table
+                    starts_at = aware(day, slots[day.isoweekday()])
                     if starts_at < now:
                         status = Lesson.Status.CANCELLED if random.random() < 0.04 else Lesson.Status.HELD
                     else:
@@ -295,7 +309,7 @@ class Command(BaseCommand):
                 if day > self.today:
                     continue
                 test = Test.objects.create(subject=group.subject, group=group,
-                                           title=f"{title} ({group.name})", kind=kind, held_at=day)
+                                           title=f"{title} ({group.full_name})", kind=kind, held_at=day)
                 for student in self.members_on(group, day):
                     # Diagnostic -> 100-200, topic test -> percent
                     results.append(TestResult(test=test, student=student,
@@ -399,7 +413,8 @@ class Command(BaseCommand):
     def print_summary(self):
         rows = [
             ("Предмети", Subject), ("Викладачі", Teacher), ("Тарифи", Tariff), ("Учні", Student),
-            ("Групи", StudyGroup), ("Договори", Contract), ("Заняття", Lesson),
+            ("Групи", StudyGroup), ("Розклад (занять на тиждень)", GroupSchedule),
+            ("Договори", Contract), ("Заняття", Lesson),
             ("Відвідуваність", Attendance), ("Тести", Test), ("Результати тестів", TestResult),
             ("Рахунки", Invoice), ("Оплати", Payment), ("Повернення", Refund),
             ("Зарплати", Salary), ("Витрати", Expense),

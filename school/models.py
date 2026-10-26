@@ -129,9 +129,12 @@ class StudyGroup(models.Model):
         BASIC = "basic", "Базовий"
         MEDIUM = "medium", "Середній"
         ADVANCED = "advanced", "Поглиблений"
-        INTENSIVE = "intensive", "Інтенсив"
+        # "Intensive" was removed: it was easy to confuse with the tariff name
 
-    name = models.CharField("Назва групи", max_length=50)
+    # A short name inside the subject, for example "група 1".
+    # The full name "Математика · група 1" is built in full_name,
+    # so we do not repeat the subject in this field.
+    name = models.CharField("Назва групи", max_length=50, help_text="Наприклад: група 1")
     # PROTECT: you cannot delete a subject or a teacher if a group uses it
     subject = models.ForeignKey(
         Subject, on_delete=models.PROTECT, related_name="groups", verbose_name="Предмет"
@@ -148,7 +151,8 @@ class StudyGroup(models.Model):
         db_table = "study_groups"
         verbose_name = "Група"
         verbose_name_plural = "Групи"
-        ordering = ["name"]
+        # Sort by subject first: "група 1" exists in every subject
+        ordering = ["subject__name", "name"]
         constraints = [
             models.CheckConstraint(
                 condition=Q(end_date__isnull=True) | Q(end_date__gte=F("start_date")),
@@ -163,7 +167,27 @@ class StudyGroup(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.name} ({self.subject})"
+        return self.full_name
+
+    @property
+    def full_name(self):
+        """Clear name for lists and journals: "Математика · група 1".
+        Tip: load groups with select_related("subject"), otherwise every name is one more SQL query."""
+        return f"{self.subject.name} · {self.name}"
+
+    @property
+    def schedule_text(self):
+        """Schedule in one line: "Пн, Ср 18:00–19:30".
+        Days with the same time are joined: Mon and Wed at 18:00 -> "Пн, Ср 18:00–19:30".
+        Tip: load groups with prefetch_related("schedule") for lists."""
+        slots = sorted(self.schedule.all(), key=lambda s: (s.weekday, s.start_time))
+        if not slots:
+            return "розклад не задано"
+        by_time = {}  # (start, end) -> ["Пн", "Ср"]
+        for slot in slots:
+            by_time.setdefault((slot.start_time, slot.end_time), []).append(slot.short_day)
+        parts = [f"{', '.join(days)} {start:%H:%M}–{end:%H:%M}" for (start, end), days in by_time.items()]
+        return "; ".join(parts)
 
     def current_students(self):
         """Students of the group = students with an active contract for this group."""
@@ -174,6 +198,77 @@ class StudyGroup(models.Model):
     @property
     def free_places(self):
         return self.max_students - self.current_students().count()
+
+
+class GroupSchedule(models.Model):
+    """Regular weekly schedule of a group: one row = one lesson in the week.
+    Example: group 1, Monday, 18:00-19:30."""
+
+    # Numbers like in Python date.isoweekday(): Monday = 1 ... Sunday = 7
+    class Weekday(models.IntegerChoices):
+        MONDAY = 1, "Понеділок"
+        TUESDAY = 2, "Вівторок"
+        WEDNESDAY = 3, "Середа"
+        THURSDAY = 4, "Четвер"
+        FRIDAY = 5, "П'ятниця"
+        SATURDAY = 6, "Субота"
+        SUNDAY = 7, "Неділя"
+
+    SHORT_DAYS = {1: "Пн", 2: "Вт", 3: "Ср", 4: "Чт", 5: "Пт", 6: "Сб", 7: "Нд"}
+
+    # CASCADE: if a group is deleted, its schedule is deleted too
+    group = models.ForeignKey(
+        StudyGroup, on_delete=models.CASCADE, related_name="schedule", verbose_name="Група"
+    )
+    weekday = models.PositiveSmallIntegerField("День тижня", choices=Weekday.choices)
+    start_time = models.TimeField("Початок")
+    end_time = models.TimeField("Кінець")
+
+    class Meta:
+        db_table = "group_schedule"
+        verbose_name = "Розклад групи"
+        verbose_name_plural = "Розклад груп"
+        ordering = ["group", "weekday", "start_time"]
+        constraints = [
+            # A group cannot have two lessons on the same day at the same time
+            models.UniqueConstraint(
+                fields=["group", "weekday", "start_time"],
+                name="group_schedule_one_slot",
+                violation_error_message="У цієї групи вже є заняття в цей день о цій годині.",
+            ),
+            models.CheckConstraint(
+                condition=Q(weekday__gte=1, weekday__lte=7),
+                name="group_schedule_weekday_1_7",
+                violation_error_message="День тижня має бути від 1 (понеділок) до 7 (неділя).",
+            ),
+            models.CheckConstraint(
+                condition=Q(end_time__gt=F("start_time")),
+                name="group_schedule_end_after_start",
+                violation_error_message="Заняття має закінчуватися пізніше, ніж починається.",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.group.full_name}: {self.short_day} {self.start_time:%H:%M}–{self.end_time:%H:%M}"
+
+    @property
+    def short_day(self):
+        return self.SHORT_DAYS.get(self.weekday, "?")
+
+    def clean(self):
+        # Two lessons of one group must not overlap: 18:00-19:30 and 19:00-20:30 on the same day.
+        # (The database rule above only stops exactly the same start time.)
+        if not (self.group_id and self.weekday and self.start_time and self.end_time):
+            return
+        overlap = (
+            GroupSchedule.objects
+            .filter(group_id=self.group_id, weekday=self.weekday,
+                    start_time__lt=self.end_time, end_time__gt=self.start_time)
+            .exclude(pk=self.pk)
+            .exists()
+        )
+        if overlap:
+            raise ValidationError("Цей час перетинається з іншим заняттям групи в цей день.")
 
 
 class Lesson(models.Model):
@@ -206,7 +301,7 @@ class Lesson(models.Model):
     def __str__(self):
         # Show the time in Kyiv time zone, not in UTC
         when = timezone.localtime(self.starts_at).strftime("%d.%m.%Y %H:%M") if self.starts_at else "—"
-        return f"{self.group.name} — {when}"
+        return f"{self.group.full_name} — {when}"
 
     def _fill_defaults(self):
         if self.teacher_id is None and self.group_id is not None:
@@ -500,7 +595,7 @@ class Contract(models.Model):
         ]
 
     def __str__(self):
-        return f"Договір №{self.pk} — {self.student} ({self.group.name})"
+        return f"Договір №{self.pk} — {self.student} ({self.group.full_name})"
 
     def clean(self):
         # A new contract cannot use an old (inactive) tariff

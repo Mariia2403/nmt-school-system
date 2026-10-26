@@ -27,7 +27,7 @@ def invoices_with_paid():
     """Invoices with an extra field paid_sum (how much was paid), calculated in SQL."""
     return (
         Invoice.objects
-        .select_related("contract__student", "contract__group")
+        .select_related("contract__student", "contract__group__subject")
         .annotate(paid_sum=Coalesce(Sum("payments__amount"), ZERO, output_field=MONEY_FIELD))
     )
 
@@ -82,7 +82,7 @@ def debtors_to_call(today):
         row["debt"] += inv.debt_value
         row["oldest_due"] = min(row["oldest_due"], inv.due_date)
         row["invoices"] += 1
-        row["groups"].add(inv.contract.group.name)
+        row["groups"].add(inv.contract.group.full_name)
 
     result = []
     for row in rows.values():
@@ -123,13 +123,13 @@ def dashboard(request):
     # Lessons for today and the next lessons
     today_lessons = (
         Lesson.objects.filter(starts_at__date=today)
-        .select_related("group", "group__subject", "teacher")
+        .select_related("group__subject", "teacher")
         .order_by("starts_at")
     )
     next_lessons = (
         Lesson.objects.filter(starts_at__gt=now, status=Lesson.Status.PLANNED)
         .exclude(starts_at__date=today)
-        .select_related("group", "teacher")
+        .select_related("group__subject", "teacher")
         .order_by("starts_at")[:5]
     )
 
@@ -168,7 +168,7 @@ def student_list(request):
         # Load active contracts with groups in ONE extra query (not one query per student)
         .prefetch_related(Prefetch(
             "contracts",
-            queryset=Contract.objects.filter(status=Contract.Status.ACTIVE).select_related("group"),
+            queryset=Contract.objects.filter(status=Contract.Status.ACTIVE).select_related("group__subject"),
             to_attr="active_contracts",
         ))
     )
@@ -226,11 +226,12 @@ def student_detail(request, pk):
     contracts = (
         student.contracts
         .select_related("group__subject", "group__teacher", "tariff")
+        .prefetch_related("group__schedule")
         .order_by("-start_date")
     )
 
     # Attendance: statistics for all lessons, the list shows the last 30
-    attendance = student.attendance.select_related("lesson__group").order_by("-lesson__starts_at")
+    attendance = student.attendance.select_related("lesson__group__subject").order_by("-lesson__starts_at")
     stats = attendance.aggregate(
         total=Count("id"),
         present=Count("id", filter=Q(status__in=[Attendance.Status.PRESENT, Attendance.Status.LATE])),

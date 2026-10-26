@@ -80,7 +80,7 @@
         {% for lesson in today_lessons %}
           <li class="list-group-item d-flex justify-content-between align-items-center">
             <div>
-              <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.name }}
+              <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.full_name }}
               <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
               <div class="small text-muted">{{ lesson.teacher }}</div>
             </div>
@@ -96,7 +96,7 @@
       <ul class="list-group list-group-flush">
         {% for lesson in next_lessons %}
           <li class="list-group-item">
-            <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> · {{ lesson.group.name }}
+            <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> · {{ lesson.group.full_name }}
             <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
           </li>
         {% empty %}
