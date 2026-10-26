@@ -278,6 +278,10 @@ class Test(models.Model):
     kind = models.CharField("Тип", max_length=20, choices=Kind.choices, default=Kind.TOPIC)
     held_at = models.DateField("Дата проведення")
 
+    # Tests of these types use the official NMT scale (100-200).
+    # Topic tests use percent (0-100), because "150 points" for one topic means nothing.
+    NMT_SCALE_KINDS = [Kind.DIAGNOSTIC, Kind.TRIAL, Kind.FINAL]
+
     class Meta:
         db_table = "tests"
         verbose_name = "Тест"
@@ -287,9 +291,32 @@ class Test(models.Model):
     def __str__(self):
         return f"{self.title} ({self.held_at:%d.%m.%Y})"
 
+    @property
+    def uses_nmt_scale(self):
+        return self.kind in self.NMT_SCALE_KINDS
+
+    def score_range(self):
+        """Allowed score for this test: (min, max)."""
+        return (100, 200) if self.uses_nmt_scale else (0, 100)
+
+    def scale_label(self):
+        """Short text about the scale, for error messages and pages."""
+        return "від 100 до 200 (шкала НМТ)" if self.uses_nmt_scale else "від 0 до 100 (%)"
+
     def clean(self):
         if self.group_id and self.subject_id and self.group.subject_id != self.subject_id:
             raise ValidationError({"group": "Предмет групи не збігається з предметом тесту."})
+
+        # If somebody changes the type of a test that already has results,
+        # the old scores can be wrong for the new scale (for example, 70% -> "70 NMT points").
+        if self.pk:
+            low, high = self.score_range()
+            wrong = self.results.exclude(score__gte=low, score__lte=high).count()
+            if wrong:
+                raise ValidationError({
+                    "kind": f"Для цього типу бал має бути {self.scale_label()}, "
+                            f"але {wrong} результат(ів) не підходять. Спершу виправте бали."
+                })
 
 
 class TestResult(models.Model):
@@ -299,7 +326,9 @@ class TestResult(models.Model):
     student = models.ForeignKey(
         Student, on_delete=models.CASCADE, related_name="test_results", verbose_name="Учень"
     )
-    # 0-200 because school tests can use their own scale, not only the NMT scale
+    # The database allows 0-200 for all tests.
+    # The exact scale depends on the test type and is checked in clean():
+    # topic test -> 0-100 (%), diagnostic / trial NMT / final -> 100-200.
     score = models.IntegerField(
         "Бал", validators=[MinValueValidator(0), MaxValueValidator(200)]
     )
@@ -319,18 +348,45 @@ class TestResult(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.student} — {self.test.title}: {self.score}"
+        return f"{self.student} — {self.test.title}: {self.score_display()}"
+
+    def score_display(self):
+        """Score with its unit: "70%" for topic tests, "165" for the NMT scale."""
+        if self.score is None:
+            return "—"
+        return str(self.score) if self.test.uses_nmt_scale else f"{self.score}%"
+
+    def _get_test(self):
+        # When you add a new test with results on one admin page,
+        # the test is not saved yet: test_id is empty, but self.test already exists.
+        # So we take the object, not only the id.
+        try:
+            return self.test
+        except Test.DoesNotExist:
+            return None
 
     def clean(self):
-        if not (self.test_id and self.student_id):
+        test = self._get_test()
+        if test is None:
+            return
+
+        # 1. The score must fit the scale of this test type
+        low, high = test.score_range()
+        if self.score is not None and not (low <= self.score <= high):
+            raise ValidationError({
+                "score": f"Для тесту типу «{test.get_kind_display()}» бал має бути {test.scale_label()}."
+            })
+
+        # 2. The student must study in the group (or the subject) of this test
+        if not self.student_id:
             return
         contracts = Contract.objects.filter(student_id=self.student_id)
-        if self.test.group_id:
+        if test.group_id:
             # Group test: the student must study in this group
-            ok = contracts.filter(group_id=self.test.group_id).exists()
+            ok = contracts.filter(group_id=test.group_id).exists()
         else:
             # School-wide test: the student must study this subject in any group
-            ok = contracts.filter(group__subject_id=self.test.subject_id).exists()
+            ok = contracts.filter(group__subject_id=test.subject_id).exists()
         if not ok:
             raise ValidationError({"student": "Цей учень не навчається в групі (або на предметі) цього тесту."})
 

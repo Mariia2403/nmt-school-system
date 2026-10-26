@@ -127,7 +127,7 @@ class Command(BaseCommand):
         ]
 
     def create_tariffs(self):
-        # CHANGED: only two tariffs for new contracts.
+        # Only two tariffs for new contracts.
         # The "Intensive" tariff was removed: students paid for 12 lessons a month,
         # but groups have only 8 lessons a month.
         self.tariffs = [
@@ -150,7 +150,6 @@ class Command(BaseCommand):
             ("УКР-1", "Українська мова", t[0], StudyGroup.Level.MEDIUM, [0, 3], time(16, 0)),
             ("УКР-2", "Українська мова", t[0], StudyGroup.Level.ADVANCED, [1, 4], time(17, 30)),
             ("МАТ-1", "Математика", t[1], StudyGroup.Level.BASIC, [0, 2], time(18, 0)),
-            # CHANGED: level "Intensive" -> "Advanced"
             ("МАТ-2", "Математика", t[1], StudyGroup.Level.ADVANCED, [1, 3], time(16, 0)),
             ("ІСТ-1", "Історія України", t[2], StudyGroup.Level.MEDIUM, [2, 5], time(10, 0)),
             ("АНГ-1", "Англійська мова", t[3], StudyGroup.Level.MEDIUM, [4, 5], time(12, 0)),
@@ -201,7 +200,7 @@ class Command(BaseCommand):
                 start = group.start_date + timedelta(days=random.choice([0, 0, 0, 3, 7, 14, 21, 30]))
                 contract = Contract.objects.create(
                     student=student, group=group,
-                    # CHANGED: one weight for each tariff (2 tariffs -> 2 weights).
+                    # One weight for each tariff (2 tariffs -> 2 weights).
                     # About 60% "Standard", 40% "Guarantee 170+".
                     tariff=random.choices(active_tariffs, weights=[6, 4])[0],
                     start_date=start,
@@ -268,9 +267,22 @@ class Command(BaseCommand):
         Attendance.objects.bulk_create(attendance)
 
     def score_for(self, student, test_day):
-        """Test score: student level + progress over time + some luck."""
+        """NMT scale score (100-200): student level + progress over time + some luck."""
         progress = (test_day - self.year_start).days // 15
         return max(100, min(200, self.skill[student.id] + progress + random.randint(-12, 12)))
+
+    def percent_for(self, student, test_day):
+        """Topic test score in percent (0-100).
+        A strong student (level 180) gets about 90%, a weak one (level 120) about 40%."""
+        progress = (test_day - self.year_start).days // 15
+        value = 40 + (self.skill[student.id] - 120) * 0.8 + progress + random.randint(-10, 10)
+        return max(0, min(100, round(value)))
+
+    def result_score(self, test, student, test_day):
+        """Choose the right scale for the test type."""
+        if test.uses_nmt_scale:
+            return self.score_for(student, test_day)
+        return self.percent_for(student, test_day)
 
     def create_tests(self):
         results = []
@@ -285,7 +297,9 @@ class Command(BaseCommand):
                 test = Test.objects.create(subject=group.subject, group=group,
                                            title=f"{title} ({group.name})", kind=kind, held_at=day)
                 for student in self.members_on(group, day):
-                    results.append(TestResult(test=test, student=student, score=self.score_for(student, day)))
+                    # Diagnostic -> 100-200, topic test -> percent
+                    results.append(TestResult(test=test, student=student,
+                                              score=self.result_score(test, student, day)))
 
         # School-wide trial NMT in Ukrainian for all groups of the subject (group is empty)
         trial_day = self.year_start + timedelta(days=46)
