@@ -127,9 +127,11 @@ class Command(BaseCommand):
         ]
 
     def create_tariffs(self):
+        # CHANGED: only two tariffs for new contracts.
+        # The "Intensive" tariff was removed: students paid for 12 lessons a month,
+        # but groups have only 8 lessons a month.
         self.tariffs = [
             Tariff.objects.create(name="Стандарт", monthly_price=Decimal("2400"), lessons_per_month=8),
-            Tariff.objects.create(name="Інтенсив", monthly_price=Decimal("3200"), lessons_per_month=12),
             Tariff.objects.create(
                 name="Гарантія 170+", monthly_price=Decimal("3800"), lessons_per_month=8,
                 has_guarantee=True, guarantee_min_score=170, refund_pct=Decimal("30"),
@@ -148,7 +150,8 @@ class Command(BaseCommand):
             ("УКР-1", "Українська мова", t[0], StudyGroup.Level.MEDIUM, [0, 3], time(16, 0)),
             ("УКР-2", "Українська мова", t[0], StudyGroup.Level.ADVANCED, [1, 4], time(17, 30)),
             ("МАТ-1", "Математика", t[1], StudyGroup.Level.BASIC, [0, 2], time(18, 0)),
-            ("МАТ-2", "Математика", t[1], StudyGroup.Level.INTENSIVE, [1, 3], time(16, 0)),
+            # CHANGED: level "Intensive" -> "Advanced"
+            ("МАТ-2", "Математика", t[1], StudyGroup.Level.ADVANCED, [1, 3], time(16, 0)),
             ("ІСТ-1", "Історія України", t[2], StudyGroup.Level.MEDIUM, [2, 5], time(10, 0)),
             ("АНГ-1", "Англійська мова", t[3], StudyGroup.Level.MEDIUM, [4, 5], time(12, 0)),
         ]
@@ -198,7 +201,9 @@ class Command(BaseCommand):
                 start = group.start_date + timedelta(days=random.choice([0, 0, 0, 3, 7, 14, 21, 30]))
                 contract = Contract.objects.create(
                     student=student, group=group,
-                    tariff=random.choices(active_tariffs, weights=[5, 2, 3])[0],
+                    # CHANGED: one weight for each tariff (2 tariffs -> 2 weights).
+                    # About 60% "Standard", 40% "Guarantee 170+".
+                    tariff=random.choices(active_tariffs, weights=[6, 4])[0],
                     start_date=start,
                     discount_pct=Decimal(random.choice([0, 0, 0, 0, 0, 10, 15])),
                 )
