@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}Учні — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Учні</h1>
+  {% if user.is_staff %}
+    <a href="{% url 'admin:school_student_add' %}" class="btn btn-primary btn-sm">
+      <i class="bi bi-plus-lg"></i> Додати учня
+    </a>
+  {% endif %}
+</div>
+
+<!-- Search and filters: a GET form, so the filters stay in the address -->
+<form method="get" class="card card-body shadow-sm mb-3">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-4">
+      <label class="form-label small text-muted mb-1">Пошук</label>
+      <input type="text" name="q" value="{{ q }}" class="form-control"
+             placeholder="Прізвище, ім'я, телефон або дані батьків">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label small text-muted mb-1">Статус</label>
+      <select name="status" class="form-select">
+        <option value="">Усі</option>
+        <option value="active" {% if status == "active" %}selected{% endif %}>Активні</option>
+        <option value="inactive" {% if status == "inactive" %}selected{% endif %}>Неактивні</option>
+      </select>
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label small text-muted mb-1">Борг</label>
+      <select name="debt" class="form-select">
+        <option value="">Усі</option>
+        <option value="overdue" {% if debt_filter == "overdue" %}selected{% endif %}>Прострочений</option>
+      </select>
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label small text-muted mb-1">Клас</label>
+      <select name="grade" class="form-select">
+        <option value="">Усі</option>
+        {% for g in grades %}
+          <option value="{{ g }}" {% if grade == g|stringformat:"d" %}selected{% endif %}>{{ g }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2 d-flex gap-2">
+      <button type="submit" class="btn btn-primary flex-fill"><i class="bi bi-search"></i> Знайти</button>
+      <a href="{% url 'school:student_list' %}" class="btn btn-outline-secondary" title="Скинути фільтри">
+        <i class="bi bi-x-lg"></i>
+      </a>
+    </div>
+  </div>
+</form>
+
+<p class="text-muted small mb-2">Знайдено: {{ total_found }}</p>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Учень</th>
+          <th>Клас</th>
+          <th>Телефон</th>
+          <th>Батьки</th>
+          <th>Групи</th>
+          <th class="text-end" title="Прострочено понад {{ overdue_days }} дн.">Прострочений борг</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for student in page %}
+          <tr>
+            <td>
+              <a href="{% url 'school:student_detail' student.pk %}" class="fw-semibold text-decoration-none">
+                {{ student.last_name }} {{ student.first_name }}
+              </a>
+              {% if student.debt %}
+                <i class="bi bi-exclamation-circle-fill text-danger ms-1" title="Прострочена оплата"></i>
+              {% endif %}
+              {% if not student.has_active %}
+                <span class="badge text-bg-secondary ms-1">неактивний</span>
+              {% endif %}
+            </td>
+            <td>{{ student.grade }}</td>
+            <td class="text-nowrap">{{ student.phone|default:"—" }}</td>
+            <td>
+              <div>{{ student.parent_name|default:"—" }}</div>
+              <div class="small text-muted text-nowrap">{{ student.parent_phone }}</div>
+            </td>
+            <td>
+              {% for contract in student.active_contracts %}
+                <span class="badge text-bg-light border">{{ contract.group.name }}</span>
+              {% empty %}
+                <span class="text-muted">—</span>
+              {% endfor %}
+            </td>
+            <td class="text-end text-nowrap">
+              {% if student.debt %}
+                <span class="text-danger fw-semibold">{{ student.debt|floatformat:"0g" }} ₴</span>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="text-center text-muted py-4">Нікого не знайдено.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Pages: 20 students on one page -->
+{% if page.has_other_pages %}
+<nav class="mt-3">
+  <ul class="pagination justify-content-center">
+    {% if page.has_previous %}
+      <li class="page-item"><a class="page-link" href="?{{ querystring }}&page={{ page.previous_page_number }}">‹</a></li>
+    {% endif %}
+    {% for number in page.paginator.page_range %}
+      <li class="page-item {% if number == page.number %}active{% endif %}">
+        <a class="page-link" href="?{{ querystring }}&page={{ number }}">{{ number }}</a>
+      </li>
+    {% endfor %}
+    {% if page.has_next %}
+      <li class="page-item"><a class="page-link" href="?{{ querystring }}&page={{ page.next_page_number }}">›</a></li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

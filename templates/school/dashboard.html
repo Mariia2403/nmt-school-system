@@ -39,9 +39,14 @@
   <div class="col-sm-6 col-lg-3">
     <div class="card stat-card shadow-sm h-100 border-danger">
       <div class="card-body">
-        <div class="text-muted small"><i class="bi bi-exclamation-triangle"></i> Прострочені борги</div>
+        <div class="text-muted small"><i class="bi bi-exclamation-triangle"></i> Прострочені борги (понад {{ overdue_days }} дн.)</div>
         <div class="display-6 text-danger">{{ total_debt|floatformat:"0g" }} ₴</div>
-        <div class="small text-muted">боржників: {{ debtors_count }}</div>
+        <div class="small">
+          <span class="text-muted">боржників: {{ debtors_count }}</span>
+          {% if debtors_count %}
+            · <a href="{% url 'school:call_list' %}" class="text-danger">до дзвінка →</a>
+          {% endif %}
+        </div>
       </div>
     </div>
   </div>
@@ -108,13 +113,20 @@
       <ul class="list-group list-group-flush">
         {% for student, debt in top_debtors %}
           <li class="list-group-item d-flex justify-content-between">
-            <span>{{ student }}</span>
+            <a href="{% url 'school:student_detail' student.pk %}" class="text-decoration-none">{{ student }}</a>
             <span class="text-danger fw-semibold">{{ debt|floatformat:"0g" }} ₴</span>
           </li>
         {% empty %}
           <li class="list-group-item text-muted">Боржників немає 🎉</li>
         {% endfor %}
       </ul>
+      {% if top_debtors %}
+        <div class="card-footer bg-white">
+          <a href="{% url 'school:call_list' %}" class="small text-decoration-none">
+            <i class="bi bi-telephone-outbound"></i> Усі боржники — список до дзвінка батькам
+          </a>
+        </div>
+      {% endif %}
     </div>
   </div>
 </div>

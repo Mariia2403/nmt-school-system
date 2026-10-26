@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}До дзвінка батькам — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+  <h1 class="h3 mb-0"><i class="bi bi-telephone-outbound"></i> До дзвінка батькам</h1>
+  <!-- Print the list on paper, for example to call from the office phone -->
+  <button type="button" class="btn btn-outline-secondary btn-sm d-print-none" onclick="window.print()">
+    <i class="bi bi-printer"></i> Друкувати
+  </button>
+</div>
+<p class="text-muted mb-3">
+  Учні, у яких оплата прострочена понад {{ overdue_days }} дн. Станом на {{ today|date:"d.m.Y" }}.
+  Першими — ті, хто прострочив найдовше.
+</p>
+
+{% if rows %}
+<div class="row g-3 mb-3">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm border-danger h-100">
+      <div class="card-body">
+        <div class="text-muted small">Боржників</div>
+        <div class="display-6 text-danger">{{ rows|length }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm border-danger h-100">
+      <div class="card-body">
+        <div class="text-muted small">Прострочено разом</div>
+        <div class="display-6 text-danger">{{ total_debt|floatformat:"0g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Учень</th>
+          <th>Групи</th>
+          <th>Батьки</th>
+          <th>Телефон батьків</th>
+          <th>Телефон учня</th>
+          <th class="text-end">Борг</th>
+          <th class="text-end">Прострочено</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>
+              <a href="{% url 'school:student_detail' row.student.pk %}" class="fw-semibold text-decoration-none">
+                {{ row.student.last_name }} {{ row.student.first_name }}
+              </a>
+            </td>
+            <td>
+              {% for name in row.groups %}
+                <span class="badge text-bg-light border">{{ name }}</span>
+              {% endfor %}
+            </td>
+            <td>{{ row.student.parent_name|default:"—" }}</td>
+            <td class="text-nowrap">
+              {% if row.student.parent_phone %}
+                <!-- tel: opens the phone app on a phone or a laptop -->
+                <a href="tel:{{ row.student.parent_phone }}" class="text-decoration-none">
+                  <i class="bi bi-telephone"></i> {{ row.student.parent_phone }}
+                </a>
+              {% else %}
+                <span class="text-danger small">немає телефону</span>
+              {% endif %}
+            </td>
+            <td class="text-nowrap">
+              {% if row.student.phone %}
+                <a href="tel:{{ row.student.phone }}" class="text-decoration-none text-muted">{{ row.student.phone }}</a>
+              {% else %}—{% endif %}
+            </td>
+            <td class="text-end text-nowrap">
+              <span class="text-danger fw-semibold">{{ row.debt|floatformat:"0g" }} ₴</span>
+              <div class="small text-muted">рахунків: {{ row.invoices }}</div>
+            </td>
+            <td class="text-end text-nowrap">
+              <span class="badge text-bg-danger">{{ row.days_overdue }} дн.</span>
+              <div class="small text-muted">з {{ row.oldest_due|date:"d.m.Y" }}</div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+  <div class="alert alert-success">
+    <i class="bi bi-check-circle"></i> Прострочених боргів немає. Дзвонити нікому не потрібно.
+  </div>
+{% endif %}
+{% endblock %}

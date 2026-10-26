@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+
+{% block title %}{{ student }} — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:student_list' %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До списку учнів
+</a>
+
+<div class="d-flex justify-content-between align-items-start mt-2 mb-3">
+  <div>
+    <h1 class="h3 mb-1">{{ student.last_name }} {{ student.first_name }}</h1>
+    <span class="text-muted">{{ student.grade }} клас · зареєстрований {{ student.registered_at|date:"d.m.Y" }}</span>
+  </div>
+  {% if user.is_staff %}
+    <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
+      <i class="bi bi-pencil"></i> Редагувати
+    </a>
+  {% endif %}
+</div>
+
+<div class="row g-3 mb-4">
+  <!-- Contacts -->
+  <div class="col-lg-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <div class="small text-muted">Телефон учня</div>
+        <div class="mb-2">{{ student.phone|default:"—" }}</div>
+        <div class="small text-muted">Батьки</div>
+        <div>{{ student.parent_name|default:"—" }}</div>
+        <div>{{ student.parent_phone }}</div>
+      </div>
+    </div>
+  </div>
+  <!-- Main numbers -->
+  <div class="col-sm-4 col-lg-2">
+    <div class="card stat-card shadow-sm h-100 text-center">
+      <div class="card-body">
+        <div class="small text-muted">Відвідуваність</div>
+        <div class="display-6">{% if attendance_percent is not None %}{{ attendance_percent }}%{% else %}—{% endif %}</div>
+        <div class="small text-muted">занять: {{ attendance_total }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4 col-lg-3">
+    <div class="card stat-card shadow-sm h-100 text-center">
+      <div class="card-body">
+        <div class="small text-muted">Середній бал (шкала НМТ)</div>
+        <div class="display-6">{% if avg_score %}{{ avg_score|floatformat:0 }}{% else %}—{% endif %}</div>
+        <div class="small text-muted">усіх тестів: {{ results|length }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4 col-lg-3">
+    <div class="card stat-card shadow-sm h-100 text-center {% if overdue_debt %}border-danger{% endif %}">
+      <div class="card-body">
+        <div class="small text-muted">Прострочений борг (понад {{ overdue_days }} дн.)</div>
+        <div class="display-6 {% if overdue_debt %}text-danger{% endif %}">{{ overdue_debt|floatformat:"0g" }} ₴</div>
+        <div class="small text-muted">усього до сплати: {{ unpaid_total|floatformat:"0g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tabs -->
+<ul class="nav nav-tabs" role="tablist">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-contracts" type="button">Договори</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-attendance" type="button">Відвідуваність</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tests" type="button">Тести</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button">Рахунки та оплати</button></li>
+</ul>
+
+<div class="tab-content card card-body shadow-sm border-top-0 rounded-top-0">
+
+  <!-- Contracts and groups -->
+  <div class="tab-pane fade show active" id="tab-contracts">
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead><tr><th>№</th><th>Група</th><th>Викладач</th><th>Тариф</th><th>Період</th><th>Знижка</th><th>Статус</th></tr></thead>
+        <tbody>
+          {% for c in contracts %}
+            <tr>
+              <td>{{ c.pk }}</td>
+              <td>{{ c.group.name }} <div class="small text-muted">{{ c.group.subject }}</div></td>
+              <td>{{ c.group.teacher }}</td>
+              <td>{{ c.tariff.name }}</td>
+              <td class="text-nowrap">{{ c.start_date|date:"d.m.Y" }} — {{ c.end_date|date:"d.m.Y"|default:"…" }}</td>
+              <td>{% if c.discount_pct %}{{ c.discount_pct|floatformat:0 }}%{% else %}—{% endif %}</td>
+              <td>
+                <span class="badge text-bg-{% if c.status == 'active' %}success{% elif c.status == 'suspended' %}warning{% else %}secondary{% endif %}">
+                  {{ c.get_status_display }}
+                </span>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="text-muted">Договорів немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Attendance -->
+  <div class="tab-pane fade" id="tab-attendance">
+    <p class="small text-muted">Останні 30 занять.</p>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Дата</th><th>Група</th><th>Тема</th><th>Статус</th></tr></thead>
+        <tbody>
+          {% for a in attendance %}
+            <tr>
+              <td class="text-nowrap">{{ a.lesson.starts_at|date:"d.m.Y H:i" }}</td>
+              <td>{{ a.lesson.group.name }}</td>
+              <td>{{ a.lesson.topic|default:"—" }}</td>
+              <td>
+                <span class="badge text-bg-{% if a.status == 'present' %}success{% elif a.status == 'late' %}warning{% elif a.status == 'absent' %}danger{% else %}secondary{% endif %}">
+                  {{ a.get_status_display }}
+                </span>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-muted">Записів відвідуваності немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tests -->
+  <div class="tab-pane fade" id="tab-tests">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Дата</th><th>Тест</th><th>Тип</th><th>Предмет</th><th class="text-end">Бал</th></tr></thead>
+        <tbody>
+          {% for r in results %}
+            <tr>
+              <td class="text-nowrap">{{ r.test.held_at|date:"d.m.Y" }}</td>
+              <td>{{ r.test.title }}</td>
+              <td>{{ r.test.get_kind_display }}</td>
+              <td>{{ r.test.subject }}</td>
+              <td class="text-end fw-semibold">{{ r.score_display }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="text-muted">Результатів тестів немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Invoices and payments -->
+  <div class="tab-pane fade" id="tab-finance">
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead><tr><th>Місяць</th><th>Група</th><th class="text-end">Сума</th><th class="text-end">Сплачено</th><th class="text-end">Борг</th><th>Сплатити до</th><th>Оплати</th></tr></thead>
+        <tbody>
+          {% for inv in invoices %}
+            <tr class="{% if inv.is_overdue %}table-danger{% elif inv.is_waiting %}table-warning{% endif %}">
+              <td class="text-nowrap">{{ inv.period_month|date:"F Y" }}</td>
+              <td>{{ inv.contract.group.name }}</td>
+              <td class="text-end">{{ inv.amount|floatformat:"0g" }} ₴</td>
+              <td class="text-end">{{ inv.paid_sum|floatformat:"0g" }} ₴</td>
+              <td class="text-end fw-semibold {% if inv.debt_value %}text-danger{% endif %}">
+                {% if inv.debt_value %}{{ inv.debt_value|floatformat:"0g" }} ₴{% else %}—{% endif %}
+              </td>
+              <td class="text-nowrap">{{ inv.due_date|date:"d.m.Y" }}</td>
+              <td class="small">
+                {% for p in inv.payments.all %}
+                  <div class="text-nowrap">{{ p.paid_at|date:"d.m.Y" }} · {{ p.amount|floatformat:"0g" }} ₴ · {{ p.get_method_display }}</div>
+                {% empty %}
+                  <span class="text-muted">немає</span>
+                {% endfor %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="text-muted">Рахунків немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="small text-muted mt-2 mb-0">
+      Червоним — прострочено понад {{ overdue_days }} дн. Жовтим — не сплачено, але {{ overdue_days }} дн. після терміну ще не минули.
+    </p>
+  </div>
+</div>
+{% endblock %}

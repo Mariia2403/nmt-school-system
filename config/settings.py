@@ -94,6 +94,13 @@ USE_I18N = True
 USE_TZ = True
 
 
+# School rules
+# A debt becomes "overdue" when more than this number of days
+# has passed after the due date of the invoice.
+# Change only this number if the school decides to use another rule.
+DEBT_OVERDUE_DAYS = 7
+
+
 # Static files (CSS, JS, images)
 STATIC_URL = "static/"
 
