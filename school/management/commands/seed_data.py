@@ -211,8 +211,11 @@ class Command(BaseCommand):
                 if group.subject_id in subjects_used or taken[group.id] >= group.max_students:
                     continue
                 start = group.start_date + timedelta(days=random.choice([0, 0, 0, 3, 7, 14, 21, 30]))
+                # Invoices for the whole course are created automatically in Contract.save()
                 contract = Contract.objects.create(
                     student=student, group=group,
+                    # About 20% of families pay for the whole course at once
+                    payment_plan=random.choices(list(Contract.PaymentPlan), weights=[8, 2])[0],
                     # One weight for each tariff (2 tariffs -> 2 weights).
                     # About 60% "Standard", 40% "Guarantee 170+".
                     tariff=random.choices(active_tariffs, weights=[6, 4])[0],
@@ -226,10 +229,11 @@ class Command(BaseCommand):
 
         # A few contracts with other statuses, to make the data realistic
         early = [c for c in self.contracts if c.start_date == c.group.start_date]
-        for contract in random.sample(early, 2):
+        monthly = [c for c in early if c.payment_plan == Contract.PaymentPlan.MONTHLY]
+        for contract in random.sample(monthly, 2):
             contract.status = Contract.Status.TERMINATED
             contract.end_date = contract.start_date + timedelta(days=random.randint(20, 35))
-            contract.save()
+            contract.save()  # the invoices after the end date are deleted automatically
         suspended = random.choice([c for c in self.contracts if c.status == Contract.Status.ACTIVE])
         suspended.status = Contract.Status.SUSPENDED
         suspended.save()
@@ -333,20 +337,21 @@ class Command(BaseCommand):
         TestResult.objects.bulk_create(results)
 
     def create_invoices_and_payments(self):
-        current_month = self.today.replace(day=1)
+        """The invoices already exist (Contract.save() creates them). Here we only add payments
+        for invoices whose due date has come; future invoices stay unpaid."""
         for contract in self.contracts:
-            month = contract.start_date.replace(day=1)
-            last = contract.end_date or self.today
-            while month <= min(current_month, last):
-                # amount is calculated automatically (tariff price - discount)
-                invoice = Invoice.objects.create(contract=contract, period_month=month,
-                                                 due_date=month.replace(day=10))
-                self.pay(invoice, is_current=(month == current_month))
-                month = add_month(month)
+            for invoice in contract.invoices.order_by("period_month"):
+                if invoice.due_date > self.today:
+                    continue  # it is too early to pay
+                is_current = invoice.period_month == self.today.replace(day=1)
+                self.pay(invoice, is_current, prepaid=contract.payment_plan == Contract.PaymentPlan.PREPAID)
 
-    def pay(self, invoice, is_current):
+    def pay(self, invoice, is_current, prepaid=False):
         r = random.random()
-        if is_current:
+        if prepaid:
+            # The whole course is paid at once, before the start
+            part = 1
+        elif is_current:
             # Current month: some pay fully, some partly, some have not paid yet
             part = 1 if r < 0.45 else (0.5 if r < 0.65 else 0)
         else:
@@ -354,7 +359,8 @@ class Command(BaseCommand):
             part = 1 if r < 0.88 else 0.5
         if part == 0:
             return
-        day = invoice.period_month + timedelta(days=random.randint(0, 11))
+        # Most families pay a few days before or after the due date, a few are late
+        day = invoice.due_date + timedelta(days=random.choice([-3, -2, -1, 0, 0, 1, 2, 3, 5, 10]))
         day = min(day, self.today)
         method = random.choices(list(Payment.Method), weights=[2, 4, 2, 3])[0]
         # reserve_amount is calculated automatically for guarantee tariffs

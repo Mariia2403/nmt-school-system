@@ -255,10 +255,13 @@ def student_detail(request, pk):
         inv.debt_value = max(inv.amount - inv.paid_sum, Decimal("0"))
         # The same rule as on all other pages
         inv.is_overdue = is_overdue(inv, today)
+        # A planned invoice for a future month: nobody has to pay it yet
+        inv.is_future = inv.due_date > today
         # Not paid yet, but the student still has time (less than N days after the due date)
-        inv.is_waiting = inv.debt_value > 0 and not inv.is_overdue
+        inv.is_waiting = inv.debt_value > 0 and not inv.is_overdue and not inv.is_future
     overdue_debt = sum((inv.debt_value for inv in invoices if inv.is_overdue), Decimal("0"))
-    unpaid_total = sum((inv.debt_value for inv in invoices), Decimal("0"))
+    # Only invoices whose due date has come (future months are not a debt)
+    unpaid_total = sum((inv.debt_value for inv in invoices if not inv.is_future), Decimal("0"))
 
     context = {
         "student": student,

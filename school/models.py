@@ -34,6 +34,22 @@ def first_day_of_month(value):
     return value.replace(day=1) if value else value
 
 
+def next_month(value):
+    """First day of the next month: 2026-12-01 -> 2027-01-01."""
+    return value.replace(year=value.year + (value.month == 12), month=value.month % 12 + 1, day=1)
+
+
+def months_between(start, end):
+    """List of first days of all months from start to end (both included).
+    2026-09-08 .. 2026-11-30 -> [2026-09-01, 2026-10-01, 2026-11-01]"""
+    result = []
+    month = first_day_of_month(start)
+    while month <= end:
+        result.append(month)
+        month = next_month(month)
+    return result
+
+
 def money_round(value):
     """Round money to 2 digits after the point: 123.456 -> 123.46."""
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -539,6 +555,10 @@ class Contract(models.Model):
         COMPLETED = "completed", "Завершений"
         TERMINATED = "terminated", "Розірваний"
 
+    class PaymentPlan(models.TextChoices):
+        MONTHLY = "monthly", "Щомісяця"
+        PREPAID = "prepaid", "Повністю наперед"
+
     # Statuses when a student "takes a place" in a group
     OPEN_STATUSES = [Status.ACTIVE, Status.SUSPENDED]
 
@@ -553,11 +573,22 @@ class Contract(models.Model):
         Tariff, on_delete=models.PROTECT, related_name="contracts", verbose_name="Тариф"
     )
     start_date = models.DateField("Дата початку")
-    end_date = models.DateField("Дата завершення", null=True, blank=True)
+    # Filled automatically with the end date of the group.
+    # Change it by hand only if the contract is terminated early.
+    end_date = models.DateField(
+        "Дата завершення", null=True, blank=True,
+        help_text="Якщо не вказати — візьметься дата завершення групи. "
+                  "Вручну — лише при достроковому розірванні.",
+    )
     discount_pct = models.DecimalField(
         "Знижка, %", default=Decimal("0"), validators=PERCENT_VALIDATORS, **PERCENT
     )
     status = models.CharField("Статус", max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    payment_plan = models.CharField(
+        "План оплати", max_length=20, choices=PaymentPlan.choices, default=PaymentPlan.MONTHLY,
+        help_text="Щомісяця — рахунок на кожен місяць до 1-го числа. "
+                  "Повністю наперед — один рахунок на весь курс.",
+    )
     # We know this score only after the student takes the NMT
     final_nmt_score = models.IntegerField(
         "Підсумковий бал НМТ", null=True, blank=True, validators=NMT_SCORE_VALIDATORS
@@ -597,7 +628,21 @@ class Contract(models.Model):
     def __str__(self):
         return f"Договір №{self.pk} — {self.student} ({self.group.full_name})"
 
+    def _fill_defaults(self):
+        if not self.group_id:
+            return
+        # 1. The contract ends when the group ends (if nobody wrote another date)
+        if self.end_date is None:
+            self.end_date = self.group.end_date
+        # 2. Early termination: if the date is still in the future, the contract ends today
+        if self.status == self.Status.TERMINATED:
+            today = timezone.localdate()
+            if self.end_date is None or self.end_date > today:
+                self.end_date = max(today, self.start_date) if self.start_date else today
+
     def clean(self):
+        self._fill_defaults()
+
         # A new contract cannot use an old (inactive) tariff
         if self._state.adding and self.tariff_id and not self.tariff.is_active:
             raise ValidationError({"tariff": "Цей тариф більше не діє."})
@@ -612,10 +657,90 @@ class Contract(models.Model):
             if taken >= self.group.max_students:
                 raise ValidationError({"group": "У групі немає вільних місць."})
 
+        if self.group_id and self.start_date:
+            group = self.group
+            # The student cannot start before the group starts
+            if self.start_date < group.start_date:
+                raise ValidationError({"start_date": f"Група починає навчання {group.start_date:%d.%m.%Y}."})
+            # The contract cannot be longer than the group
+            if group.end_date and self.end_date and self.end_date > group.end_date:
+                raise ValidationError({"end_date": f"Група завершує навчання {group.end_date:%d.%m.%Y}."})
+
+        # For full prepayment we must know how many months to pay for
+        if self.payment_plan == self.PaymentPlan.PREPAID and not self.end_date:
+            raise ValidationError({
+                "payment_plan": "Для оплати наперед у групи має бути дата завершення "
+                                "(інакше невідомо, за скільки місяців рахувати)."
+            })
+
+        # The plan cannot change after the first payment:
+        # the money is already linked to the old invoices
+        if self.pk:
+            old_plan = Contract.objects.filter(pk=self.pk).values_list("payment_plan", flat=True).first()
+            if old_plan != self.payment_plan and Payment.objects.filter(invoice__contract=self).exists():
+                raise ValidationError({"payment_plan": "За договором уже є оплати, план оплати змінити не можна."})
+
+    def save(self, *args, **kwargs):
+        self._fill_defaults()
+        super().save(*args, **kwargs)
+        # After every save the invoices follow the contract (dates, plan, discount)
+        self.sync_invoices()
+
     def monthly_amount(self):
         """Price for one month with the discount."""
         price = self.tariff.monthly_price
         return money_round(price * (Decimal("100") - self.discount_pct) / Decimal("100"))
+
+    def study_months(self):
+        """All months of studying: from the start month to the end month.
+        If the end is unknown, we plan only until the current month."""
+        last_day = self.end_date or max(timezone.localdate(), self.start_date)
+        return months_between(self.start_date, last_day)
+
+    def planned_invoices(self):
+        """The invoice plan for this contract: {month: (amount, due date)}.
+
+        Monthly: one invoice for every month, pay before the 1st day of the month
+                 (the first month: not earlier than the start of studying).
+        Prepaid: one invoice for the whole course, pay before the start of studying."""
+        months = self.study_months()
+        if self.payment_plan == self.PaymentPlan.PREPAID:
+            total = self.monthly_amount() * len(months)
+            return {months[0]: (total, self.start_date)}
+        return {month: (self.monthly_amount(), max(month, self.start_date)) for month in months}
+
+    def sync_invoices(self):
+        """Make the invoices of this contract match the plan.
+
+        - creates the missing invoices;
+        - updates the amount and the due date of invoices WITHOUT payments
+          (for example, the discount changed);
+        - deletes invoices WITHOUT payments that are not in the plan anymore
+          (for example, the contract was terminated in December -> January..May are not needed).
+        Invoices that already have payments are never changed: this is real money.
+        Returns (created, updated, deleted)."""
+        plan = self.planned_invoices()
+        created = updated = deleted = 0
+        existing = {inv.period_month: inv for inv in self.invoices.annotate(pay_count=models.Count("payments"))}
+
+        for month, inv in existing.items():
+            if inv.pay_count:
+                continue  # it has payments: do not touch
+            if month not in plan:
+                inv.delete()
+                deleted += 1
+                continue
+            amount, due = plan[month]
+            if inv.amount != amount or inv.due_date != due:
+                inv.amount, inv.due_date = amount, due
+                inv.save(update_fields=["amount", "due_date"])
+                updated += 1
+
+        for month, (amount, due) in plan.items():
+            if month not in existing:
+                Invoice.objects.create(contract=self, period_month=month, amount=amount, due_date=due)
+                created += 1
+        return created, updated, deleted
 
 
 class Invoice(models.Model):
@@ -652,7 +777,9 @@ class Invoice(models.Model):
     def _fill_defaults(self):
         self.period_month = first_day_of_month(self.period_month)
         if self.amount is None and self.contract_id:
-            self.amount = self.contract.monthly_amount()
+            # Take the amount from the contract plan (monthly price or the whole course)
+            planned = self.contract.planned_invoices().get(self.period_month)
+            self.amount = planned[0] if planned else self.contract.monthly_amount()
 
     def clean(self):
         self._fill_defaults()

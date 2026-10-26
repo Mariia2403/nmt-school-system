@@ -12,7 +12,6 @@ from decimal import Decimal
 from django.contrib import admin
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value
 from django.db.models.functions import Coalesce
-from django.utils import timezone
 
 from .models import (
     Attendance, Contract, Expense, GroupSchedule, Invoice, Lesson, Payment, Refund, Salary,
@@ -31,7 +30,7 @@ admin.site.index_title = "Адміністрування"
 class ContractInline(admin.TabularInline):
     model = Contract
     extra = 0
-    fields = ["group", "tariff", "status", "start_date", "end_date", "discount_pct"]
+    fields = ["group", "tariff", "payment_plan", "status", "start_date", "end_date", "discount_pct"]
     autocomplete_fields = ["group", "tariff"]
 
     def get_queryset(self, request):
@@ -99,10 +98,17 @@ class TestResultInline(admin.TabularInline):
 
 
 class InvoiceInline(admin.TabularInline):
+    """Invoices of a contract. They are created automatically from the payment plan,
+    so here we only look at them (to change one invoice, open it with the link)."""
     model = Invoice
     extra = 0
     fields = ["period_month", "amount", "due_date"]
+    readonly_fields = ["period_month", "amount", "due_date"]
     show_change_link = True
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False  # new invoices come from the plan, not by hand
 
 
 class RefundInline(admin.TabularInline):
@@ -290,28 +296,29 @@ class TestResultAdmin(admin.ModelAdmin):
 
 @admin.register(Contract)
 class ContractAdmin(admin.ModelAdmin):
-    list_display = ["id", "student", "group", "tariff", "status", "start_date", "discount_pct", "final_nmt_score"]
-    list_filter = ["status", "tariff", "group__subject", "group"]
+    list_display = [
+        "id", "student", "group", "tariff", "payment_plan", "status", "start_date", "end_date",
+        "discount_pct", "final_nmt_score",
+    ]
+    list_filter = ["status", "payment_plan", "tariff", "group__subject", "group"]
     search_fields = ["student__last_name", "student__first_name", "group__name"]
     autocomplete_fields = ["student", "group", "tariff"]
     inlines = [InvoiceInline, RefundInline]
-    actions = ["create_invoices_for_this_month"]
+    actions = ["sync_invoices"]
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("student", "group__subject", "tariff")
 
-    @admin.action(description="Створити рахунки на поточний місяць (для діючих договорів)")
-    def create_invoices_for_this_month(self, request, queryset):
-        month = timezone.localdate().replace(day=1)
-        due = month.replace(day=10)  # pay until the 10th day of the month
-        created = 0
-        for contract in queryset.filter(status=Contract.Status.ACTIVE):
-            # The amount is calculated automatically in Invoice.save()
-            _, was_created = Invoice.objects.get_or_create(
-                contract=contract, period_month=month, defaults={"due_date": due}
-            )
-            created += was_created
-        self.message_user(request, f"Створено рахунків: {created}")
+    @admin.action(description="Оновити графік рахунків за планом оплати")
+    def sync_invoices(self, request, queryset):
+        # Normally the invoices are updated when a contract is saved.
+        # This action is useful for groups without an end date (new months appear over time)
+        # and for old contracts created before the automatic schedule.
+        created = updated = deleted = 0
+        for contract in queryset.select_related("group", "tariff"):
+            c, u, d = contract.sync_invoices()
+            created, updated, deleted = created + c, updated + u, deleted + d
+        self.message_user(request, f"Рахунків створено: {created}, оновлено: {updated}, видалено: {deleted}")
 
 
 class DebtFilter(admin.SimpleListFilter):
