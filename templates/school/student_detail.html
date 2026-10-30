@@ -12,7 +12,7 @@
     <h1 class="h3 mb-1">{{ student.last_name }} {{ student.first_name }}</h1>
     <span class="text-muted">{{ student.grade }} клас · зареєстрований {{ student.registered_at|date:"d.m.Y" }}</span>
   </div>
-  {% if user.is_staff %}
+  {% if is_school_admin %}
     <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
       <i class="bi bi-pencil"></i> Редагувати
     </a>
@@ -54,9 +54,16 @@
   <div class="col-sm-4 col-lg-3">
     <div class="card stat-card shadow-sm h-100 text-center {% if overdue_debt %}border-danger{% endif %}">
       <div class="card-body">
-        <div class="small text-muted">Прострочений борг (понад {{ overdue_days }} дн.)</div>
-        <div class="display-6 {% if overdue_debt %}text-danger{% endif %}">{{ overdue_debt|floatformat:"0g" }} ₴</div>
-        <div class="small text-muted">до сплати зараз: {{ unpaid_total|floatformat:"0g" }} ₴</div>
+        {% if is_school_admin %}
+          <div class="small text-muted">Прострочений борг (понад {{ overdue_days }} дн.)</div>
+          <div class="display-6 {% if overdue_debt %}text-danger{% endif %}">{{ overdue_debt|floatformat:"0g" }} ₴</div>
+          <div class="small text-muted">до сплати зараз: {{ unpaid_total|floatformat:"0g" }} ₴</div>
+        {% else %}
+          <!-- A teacher does not see money: the card is empty here, the debt mark is in the journal -->
+          <div class="small text-muted">Тестів на шкалі НМТ</div>
+          <div class="display-6">{{ nmt_results_count }}</div>
+          <div class="small text-muted">діагностичні, пробні, підсумкові</div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -67,7 +74,9 @@
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-contracts" type="button">Договори</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-attendance" type="button">Відвідуваність</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tests" type="button">Тести</button></li>
+  {% if is_school_admin %}
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button">Рахунки та оплати</button></li>
+  {% endif %}
 </ul>
 
 <div class="tab-content card card-body shadow-sm border-top-0 rounded-top-0">
@@ -76,7 +85,7 @@
   <div class="tab-pane fade show active" id="tab-contracts">
     <div class="table-responsive">
       <table class="table align-middle mb-0">
-        <thead><tr><th>№</th><th>Група</th><th>Викладач</th><th>Тариф</th><th>Оплата</th><th>Період</th><th>Знижка</th><th>Статус</th></tr></thead>
+        <thead><tr><th>№</th><th>Група</th><th>Викладач</th>{% if is_school_admin %}<th>Тариф</th><th>Оплата</th>{% endif %}<th>Період</th>{% if is_school_admin %}<th>Знижка</th>{% endif %}<th>Статус</th></tr></thead>
         <tbody>
           {% for c in contracts %}
             <tr>
@@ -85,10 +94,14 @@
                 <div class="small text-muted">{{ c.group.get_level_display }} · {{ c.group.schedule_text }}</div>
               </td>
               <td>{{ c.group.teacher }}</td>
+              {% if is_school_admin %}
               <td>{{ c.tariff.name }}</td>
               <td>{{ c.get_payment_plan_display }}</td>
+              {% endif %}
               <td class="text-nowrap">{{ c.start_date|date:"d.m.Y" }} — {{ c.end_date|date:"d.m.Y"|default:"…" }}</td>
+              {% if is_school_admin %}
               <td>{% if c.discount_pct %}{{ c.discount_pct|floatformat:0 }}%{% else %}—{% endif %}</td>
+              {% endif %}
               <td>
                 <span class="badge text-bg-{% if c.status == 'active' %}success{% elif c.status == 'suspended' %}warning{% else %}secondary{% endif %}">
                   {{ c.get_status_display }}

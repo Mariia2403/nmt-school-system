@@ -13,10 +13,13 @@ import random
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
+from school.access import ADMIN_GROUP, create_teacher_login, setup_role_groups
 from school.models import (
     Attendance, Contract, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
@@ -70,6 +73,10 @@ NMT_TABLES_2026 = {
         151, 152, 153, 155, 157, 159, 162, 166, 169, 173, 179, 185, 191, 200,
     ]),
 }
+# Demo logins for checking the roles (only for test data on your computer!)
+DEMO_PASSWORD = "nmt-demo-2026"
+DEMO_ADMIN = "director"
+
 NMT_TABLES_SOURCE = "https://osvita.ua/doc/files/news/978/97839/d5_1.pdf"
 
 
@@ -132,6 +139,7 @@ class Command(BaseCommand):
         self.create_refunds()
         self.create_salaries()
         self.create_expenses()
+        self.create_demo_logins()
         self.print_summary()
 
     # ───────────────────────── Steps ─────────────────────────
@@ -466,6 +474,23 @@ class Command(BaseCommand):
                     Expense.objects.create(category=category, amount=Decimal(amount), spent_at=spent, comment=comment)
             month = add_month(month)
 
+    def create_demo_logins(self):
+        """Roles + demo logins: "director" (administrator) and one login for every teacher.
+        Logins are not deleted by --clear: they are linked again to the new teachers."""
+        setup_role_groups()
+        User = get_user_model()
+        director, _ = User.objects.get_or_create(username=DEMO_ADMIN, defaults={"first_name": "Директор"})
+        director.is_staff = True
+        director.set_password(DEMO_PASSWORD)
+        director.save()
+        director.groups.add(Group.objects.get(name=ADMIN_GROUP))
+        self.logins = [DEMO_ADMIN]
+        for teacher in self.teachers:
+            user, _ = create_teacher_login(teacher, DEMO_PASSWORD)
+            user.set_password(DEMO_PASSWORD)  # the same demo password every time
+            user.save()
+            self.logins.append(user.username)
+
     def print_summary(self):
         rows = [
             ("Предмети", Subject), ("Таблиці переведення", ConversionTable), ("Викладачі", Teacher), ("Тарифи", Tariff), ("Учні", Student),
@@ -478,3 +503,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Тестові дані створено:"))
         for label, model in rows:
             self.stdout.write(f"  {label}: {model.objects.count()}")
+        self.stdout.write(self.style.SUCCESS(
+            f"Демо-логіни (пароль «{DEMO_PASSWORD}»): {', '.join(self.logins)}"
+        ))
+        self.stdout.write("  director — адміністратор; інші — викладачі (бачать лише свої групи).")

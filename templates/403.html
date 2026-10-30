@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Немає доступу — Школа НМТ{% endblock %}
+
+{% block content %}
+<!-- Django shows this page when a view raises PermissionDenied (see access.py) -->
+<div class="row justify-content-center mt-5">
+  <div class="col-md-8 col-lg-6 text-center">
+    <div class="display-1 text-muted"><i class="bi bi-shield-lock"></i></div>
+    <h1 class="h3 mt-3">Немає доступу до цієї сторінки</h1>
+    {% if user.is_authenticated and not is_school_admin and not current_teacher %}
+      <p class="text-muted">
+        Вашому обліковому запису <strong>{{ user.username }}</strong> ще не призначено роль.
+        Зверніться до адміністратора школи: він має додати вас до групи «Адміністратор»
+        або прив'язати ваш логін до викладача.
+      </p>
+    {% else %}
+      <p class="text-muted">Ця сторінка доступна лише адміністратору школи.</p>
+      <a href="{% url 'school:dashboard' %}" class="btn btn-primary">На головну</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

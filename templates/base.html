@@ -37,11 +37,12 @@
           <a class="nav-link {% if url_name == 'student_list' or url_name == 'student_detail' %}active{% endif %}"
              href="{% url 'school:student_list' %}"><i class="bi bi-people"></i> Учні</a>
         </li>
+        {% if is_school_admin %}
         <li class="nav-item">
           <a class="nav-link {% if url_name == 'call_list' %}active{% endif %}"
              href="{% url 'school:call_list' %}"><i class="bi bi-telephone-outbound"></i> До дзвінка</a>
         </li>
-        <!-- These pages will be added in the next steps -->
+        {% endif %}
         <li class="nav-item">
           <a class="nav-link {% if url_name == 'group_list' or url_name == 'group_detail' %}active{% endif %}"
              href="{% url 'school:group_list' %}"><i class="bi bi-collection"></i> Групи</a>
@@ -50,16 +51,30 @@
           <a class="nav-link {% if url_name == 'journal' or url_name == 'journal_lesson' %}active{% endif %}"
              href="{% url 'school:journal' %}"><i class="bi bi-journal-check"></i> Журнал</a>
         </li>
+        <!-- Money: only for the administrator -->
+        {% if is_school_admin %}
         <li class="nav-item">
           <a class="nav-link {% if url_name == 'finance' %}active{% endif %}"
              href="{% url 'school:finance' %}"><i class="bi bi-cash-coin"></i> Фінанси</a>
         </li>
+        {% endif %}
       </ul>
       <ul class="navbar-nav align-items-lg-center">
         {% if user.is_staff %}
-        <li class="nav-item"><a class="nav-link" href="{% url 'admin:index' %}"><i class="bi bi-gear"></i> Адмінка</a></li>
+        <li class="nav-item">
+          <!-- A teacher uses the admin only to enter test results -->
+          <a class="nav-link" href="{% url 'admin:index' %}">
+            {% if is_school_admin %}<i class="bi bi-gear"></i> Адмінка{% else %}<i class="bi bi-clipboard-data"></i> Тести{% endif %}
+          </a>
+        </li>
         {% endif %}
-        <li class="nav-item"><span class="navbar-text mx-lg-3"><i class="bi bi-person-circle"></i> {{ user.username }}</span></li>
+        <li class="nav-item">
+          <span class="navbar-text mx-lg-3">
+            <i class="bi bi-person-circle"></i>
+            {% if current_teacher %}{{ current_teacher }}{% else %}{{ user.username }}{% endif %}
+            <span class="badge text-bg-light">{% if is_school_admin %}адміністратор{% elif current_teacher %}викладач{% else %}без ролі{% endif %}</span>
+          </span>
+        </li>
         <li class="nav-item">
           <!-- In Django 5 logout works only with POST, so we use a small form -->
           <form method="post" action="{% url 'logout' %}" class="d-inline">

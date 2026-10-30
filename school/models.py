@@ -17,6 +17,7 @@ Note: do not name it _prepare() - Django already uses this name inside models.
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -72,6 +73,13 @@ class Subject(models.Model):
 
 
 class Teacher(models.Model):
+    # The login of this teacher on the website (can be empty: not every teacher uses the system).
+    # SET_NULL: if the login is deleted, the teacher and his lessons and salaries stay.
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="teacher_profile", verbose_name="Обліковий запис",
+        help_text="Логін, під яким викладач входить у систему. Він бачитиме лише свої групи.",
+    )
     last_name = models.CharField("Прізвище", max_length=50)
     first_name = models.CharField("Ім'я", max_length=50)
     phone = models.CharField("Телефон", max_length=20, blank=True)

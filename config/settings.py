@@ -52,6 +52,8 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                # is_school_admin and current_teacher in every template
+                "school.context_processors.roles",
             ],
         },
     },

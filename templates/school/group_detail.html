@@ -15,7 +15,7 @@
       {{ group.start_date|date:"d.m.Y" }} — {{ group.end_date|date:"d.m.Y"|default:"…" }}
     </span>
   </div>
-  {% if user.is_staff %}
+  {% if is_school_admin %}
     <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="btn btn-outline-primary btn-sm">
       <i class="bi bi-pencil"></i> Редагувати групу і розклад
     </a>
@@ -62,8 +62,13 @@
     <div class="card stat-card shadow-sm h-100 {% if debtors_count %}border-danger{% endif %}">
       <div class="card-body">
         <div class="small text-muted"><i class="bi bi-exclamation-triangle"></i> Прострочені борги</div>
-        <div class="display-6 {% if debtors_count %}text-danger{% endif %}">{{ debt_total|floatformat:"0g" }} ₴</div>
-        <div class="small text-muted">боржників у групі: {{ debtors_count }}</div>
+        {% if is_school_admin %}
+          <div class="display-6 {% if debtors_count %}text-danger{% endif %}">{{ debt_total|floatformat:"0g" }} ₴</div>
+          <div class="small text-muted">боржників у групі: {{ debtors_count }}</div>
+        {% else %}
+          <div class="display-6 {% if debtors_count %}text-danger{% endif %}">{{ debtors_count }}</div>
+          <div class="small text-muted">учнів з простроченою оплатою</div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -77,11 +82,11 @@
       <thead class="table-light">
         <tr>
           <th>Учень</th>
-          <th>Тариф</th>
+          {% if is_school_admin %}<th>Тариф</th>{% endif %}
           <th>Телефон батьків</th>
           <th class="text-end">Відвідуваність</th>
           <th class="text-end">Останній бал НМТ</th>
-          <th class="text-end">Прострочений борг</th>
+          <th class="text-end">{% if is_school_admin %}Прострочений борг{% else %}Оплата{% endif %}</th>
         </tr>
       </thead>
       <tbody>
@@ -99,7 +104,7 @@
               {% endif %}
               <div class="small text-muted">з {{ c.start_date|date:"d.m.Y" }}</div>
             </td>
-            <td class="small">{{ c.tariff.name }}</td>
+            {% if is_school_admin %}<td class="small">{{ c.tariff.name }}</td>{% endif %}
             <td class="text-nowrap">
               {% if c.student.parent_phone %}
                 <a href="tel:{{ c.student.parent_phone }}" class="text-decoration-none">{{ c.student.parent_phone }}</a>
@@ -120,8 +125,10 @@
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             <td class="text-end text-nowrap">
-              {% if c.debt %}
+              {% if c.debt and is_school_admin %}
                 <span class="text-danger fw-semibold">{{ c.debt|floatformat:"0g" }} ₴</span>
+              {% elif c.debt %}
+                <span class="badge text-bg-danger">є борг</span>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
           </tr>

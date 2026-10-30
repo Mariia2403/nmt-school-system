@@ -16,6 +16,7 @@ from django.forms.models import BaseInlineFormSet
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
+from .access import groups_for, is_admin, students_for, subjects_for
 from .models import (
     Attendance, Contract, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
@@ -89,6 +90,14 @@ class TestResultInline(admin.TabularInline):
         request._current_test = obj
         return super().get_formset(request, obj, **kwargs)
 
+    def get_queryset(self, request):
+        # A teacher sees results only of his own students
+        # (a school-wide test can have students of other teachers)
+        qs = super().get_queryset(request)
+        if not is_admin(request.user):
+            qs = qs.filter(student__in=students_for(request.user))
+        return qs
+
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         if db_field.name == "student":
             test = getattr(request, "_current_test", None)
@@ -100,6 +109,8 @@ class TestResultInline(admin.TabularInline):
                 kwargs["queryset"] = Student.objects.filter(
                     contracts__group__subject_id=test.subject_id
                 ).distinct()
+            if not is_admin(request.user):
+                kwargs["queryset"] = kwargs["queryset"].filter(pk__in=students_for(request.user))
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
@@ -139,9 +150,10 @@ class SubjectAdmin(admin.ModelAdmin):
 
 @admin.register(Teacher)
 class TeacherAdmin(admin.ModelAdmin):
-    list_display = ["last_name", "first_name", "phone", "rate_per_lesson", "is_active"]
+    list_display = ["last_name", "first_name", "phone", "rate_per_lesson", "user", "is_active"]
     list_filter = ["is_active"]
     search_fields = ["last_name", "first_name", "phone"]
+    autocomplete_fields = ["user"]  # choose the login from the list of users
     list_editable = ["is_active"]  # change it right in the list
 
 
@@ -291,11 +303,34 @@ class TestAdmin(admin.ModelAdmin):
         self.message_user(request, f"Змінено результатів: {changed}")
 
     def get_queryset(self, request):
-        return (
+        qs = (
             super().get_queryset(request)
             .select_related("subject", "group__subject")
             .annotate(results_count=Count("results"))
         )
+        if not is_admin(request.user):
+            # A teacher: tests of his groups + school-wide tests of his subjects
+            qs = qs.filter(
+                Q(group__in=groups_for(request.user))
+                | Q(group__isnull=True, subject__in=subjects_for(request.user))
+            )
+        return qs
+
+    # For a teacher we use simple lists instead of autocomplete:
+    # autocomplete would need access to ALL groups and subjects
+    def get_autocomplete_fields(self, request):
+        return self.autocomplete_fields if is_admin(request.user) else []
+
+    def get_list_filter(self, request):
+        return self.list_filter if is_admin(request.user) else ["kind"]
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if not is_admin(request.user):
+            if db_field.name == "group":
+                kwargs["queryset"] = groups_for(request.user).select_related("subject")
+            elif db_field.name == "subject":
+                kwargs["queryset"] = subjects_for(request.user)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     @admin.display(description="Результатів", ordering="results_count")
     def results_count(self, obj):
@@ -315,6 +350,23 @@ class TestResultAdmin(admin.ModelAdmin):
     @admin.display(description="Бал", ordering="score")
     def result(self, obj):
         return obj.score_display()
+
+    # This list is only for the administrator.
+    # Teachers enter results inside a test (TestResultInline has its own permissions).
+    def has_module_permission(self, request):
+        return is_admin(request.user)
+
+    def has_view_permission(self, request, obj=None):
+        return is_admin(request.user)
+
+    def has_change_permission(self, request, obj=None):
+        return is_admin(request.user)
+
+    def has_add_permission(self, request):
+        return is_admin(request.user)
+
+    def has_delete_permission(self, request, obj=None):
+        return is_admin(request.user)
 
 
 # ───────────────────────── NMT conversion tables ─────────────────────────

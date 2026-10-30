@@ -1,13 +1,14 @@
 """
 Views (page logic) of the school website.
-Every page is only for logged-in users (@login_required).
+Every page is only for logged-in users with a role (see access.py):
+@staff_page  - administrator and teachers (a teacher sees only his own data),
+@admin_page  - only the administrator (money and debts).
 """
 from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
@@ -15,6 +16,9 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
+from .access import (
+    admin_page, get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for,
+)
 from .models import (
     Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
     Teacher, Test, TestResult, months_between, next_month,
@@ -98,8 +102,12 @@ def debtors_to_call(today):
 
 # ───────────────────────── Dashboard ─────────────────────────
 
-@login_required
+@staff_page
 def dashboard(request):
+    # A teacher has his own main page: his lessons and groups, no money
+    if not is_admin(request.user):
+        return teacher_dashboard(request, get_teacher(request.user))
+
     today = timezone.localdate()
     now = timezone.now()
 
@@ -154,9 +162,42 @@ def dashboard(request):
     return render(request, "school/dashboard.html", context)
 
 
+def teacher_dashboard(request, teacher):
+    """Main page of a teacher: lessons today, forgotten journals, his groups."""
+    today = timezone.localdate()
+    now = timezone.now()
+    lessons = lessons_for(request.user).select_related("group__subject", "teacher")
+    today_lessons = with_marks(lessons.filter(starts_at__date=today)).order_by("starts_at")
+    for lesson in today_lessons:
+        lesson.needs_marks = (lesson.starts_at <= now and lesson.marked == 0
+                              and lesson.status in [Lesson.Status.PLANNED, Lesson.Status.HELD])
+    unmarked = with_marks(lessons.filter(
+        starts_at__lt=now, starts_at__gte=now - timedelta(days=30),
+        status__in=[Lesson.Status.PLANNED, Lesson.Status.HELD],
+    )).filter(marked=0).order_by("starts_at")
+    next_lessons = (
+        lessons.filter(starts_at__gt=now, status=Lesson.Status.PLANNED)
+        .exclude(starts_at__date=today).order_by("starts_at")[:5]
+    )
+    groups = (
+        groups_for(request.user).filter(pk__in=running_groups(today))
+        .select_related("subject").prefetch_related("schedule")
+        .annotate(taken=Count("contracts", filter=Q(contracts__status__in=Contract.OPEN_STATUSES), distinct=True))
+    )
+    context = {
+        "today": today,
+        "teacher": teacher,
+        "today_lessons": today_lessons,
+        "unmarked": unmarked,
+        "next_lessons": next_lessons,
+        "groups": groups,
+    }
+    return render(request, "school/dashboard_teacher.html", context)
+
+
 # ───────────────────────── Students ─────────────────────────
 
-@login_required
+@staff_page
 def student_list(request):
     today = timezone.localdate()
     q = request.GET.get("q", "").strip()
@@ -166,7 +207,8 @@ def student_list(request):
 
     active_contract = Contract.objects.filter(student=OuterRef("pk"), status=Contract.Status.ACTIVE)
     students = (
-        Student.objects
+        # A teacher sees only students of his groups
+        Student.objects.filter(pk__in=students_for(request.user))
         .annotate(has_active=Exists(active_contract))
         # Load active contracts with groups in ONE extra query (not one query per student)
         .prefetch_related(Prefetch(
@@ -214,27 +256,34 @@ def student_list(request):
         "grade": grade,
         "debt_filter": debt_filter,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
-        "grades": Student.objects.values_list("grade", flat=True).distinct().order_by("grade"),
+        "grades": students_for(request.user).values_list("grade", flat=True).distinct().order_by("grade"),
         "querystring": params.urlencode(),
     }
     return render(request, "school/student_list.html", context)
 
 
-@login_required
+@staff_page
 def student_detail(request, pk):
     today = timezone.localdate()
-    # If there is no student with this id, Django shows the "404 Not found" page
-    student = get_object_or_404(Student, pk=pk)
+    admin = is_admin(request.user)
+    # If there is no student with this id (or it is a student of another teacher),
+    # Django shows the "404 Not found" page
+    student = get_object_or_404(students_for(request.user), pk=pk)
+    my_groups = groups_for(request.user)
 
     contracts = (
         student.contracts
+        .filter(group__in=my_groups)  # a teacher sees only contracts in his groups
         .select_related("group__subject", "group__teacher", "tariff")
         .prefetch_related("group__schedule")
         .order_by("-start_date")
     )
 
     # Attendance: statistics for all lessons, the list shows the last 30
-    attendance = student.attendance.select_related("lesson__group__subject").order_by("-lesson__starts_at")
+    attendance = (
+        student.attendance.filter(lesson__group__in=my_groups)
+        .select_related("lesson__group__subject").order_by("-lesson__starts_at")
+    )
     stats = attendance.aggregate(
         total=Count("id"),
         present=Count("id", filter=Q(status__in=[Attendance.Status.PRESENT, Attendance.Status.LATE])),
@@ -242,13 +291,16 @@ def student_detail(request, pk):
     attendance_percent = round(stats["present"] * 100 / stats["total"]) if stats["total"] else None
 
     # Test results
-    results = student.test_results.select_related("test__subject", "test__group").order_by("-test__held_at")
+    results = (
+        student.test_results.filter(test__subject__in=subjects_for(request.user))
+        .select_related("test__subject", "test__group").order_by("-test__held_at")
+    )
     # Average only for tests on the NMT scale (100-200).
     # If we mix them with topic tests in %, "165" and "70%" give a meaningless "117".
     avg_score = results.filter(test__kind__in=Test.NMT_SCALE_KINDS).aggregate(avg=Avg("score"))["avg"]
 
-    # Invoices with payments inside
-    invoices = list(
+    # Invoices with payments inside (a teacher does not see money: the list is empty)
+    invoices = [] if not admin else list(
         invoices_with_paid()
         .filter(contract__student=student)
         .prefetch_related("payments")
@@ -274,6 +326,7 @@ def student_detail(request, pk):
         "attendance_percent": attendance_percent,
         "results": results,
         "avg_score": avg_score,
+        "nmt_results_count": results.filter(test__kind__in=Test.NMT_SCALE_KINDS).count(),
         "invoices": invoices,
         "overdue_debt": overdue_debt,
         "unpaid_total": unpaid_total,
@@ -301,7 +354,7 @@ def running_groups(today):
     )
 
 
-@login_required
+@staff_page
 def group_list(request):
     today = timezone.localdate()
     now = timezone.now()
@@ -310,7 +363,7 @@ def group_list(request):
     show = request.GET.get("show", "")  # "" = only groups that study now, "all" = all groups
 
     groups = (
-        StudyGroup.objects
+        groups_for(request.user)
         .select_related("subject", "teacher")
         .prefetch_related("schedule")
         .annotate(
@@ -345,8 +398,8 @@ def group_list(request):
 
     context = {
         "groups": groups,
-        "subjects": Subject.objects.filter(groups__isnull=False).distinct(),
-        "teachers": Teacher.objects.filter(groups__isnull=False).distinct(),
+        "subjects": Subject.objects.filter(groups__in=groups_for(request.user)).distinct(),
+        "teachers": Teacher.objects.filter(groups__in=groups_for(request.user)).distinct(),
         "subject": subject,
         "teacher": teacher,
         "show": show,
@@ -355,12 +408,12 @@ def group_list(request):
     return render(request, "school/group_list.html", context)
 
 
-@login_required
+@staff_page
 def group_detail(request, pk):
     today = timezone.localdate()
     now = timezone.now()
     group = get_object_or_404(
-        StudyGroup.objects.select_related("subject", "teacher").prefetch_related("schedule"), pk=pk
+        groups_for(request.user).select_related("subject", "teacher").prefetch_related("schedule"), pk=pk
     )
 
     # Students of the group = open contracts (active + suspended)
@@ -480,14 +533,14 @@ def with_marks(lessons):
     )
 
 
-@login_required
+@staff_page
 def journal(request):
     today = timezone.localdate()
     now = timezone.now()
     day = parse_day(request.GET.get("date"), today)
 
     lessons = with_marks(
-        Lesson.objects.filter(starts_at__date=day)
+        lessons_for(request.user).filter(starts_at__date=day)
         .select_related("group__subject", "group__teacher", "teacher")
     ).order_by("starts_at")
     for lesson in lessons:
@@ -498,7 +551,7 @@ def journal(request):
 
     # Lessons of the last 30 days without any marks: the teacher forgot the journal
     unmarked = with_marks(
-        Lesson.objects.filter(
+        lessons_for(request.user).filter(
             starts_at__lt=now, starts_at__gte=now - timedelta(days=30),
             status__in=[Lesson.Status.PLANNED, Lesson.Status.HELD],
         ).select_related("group__subject", "teacher")
@@ -515,11 +568,11 @@ def journal(request):
     return render(request, "school/journal.html", context)
 
 
-@login_required
+@staff_page
 def journal_lesson(request, pk):
     """Attendance form of one lesson. GET shows the form, POST saves it."""
     lesson = get_object_or_404(
-        Lesson.objects.select_related("group__subject", "group__teacher", "teacher"), pk=pk
+        lessons_for(request.user).select_related("group__subject", "group__teacher", "teacher"), pk=pk
     )
     now = timezone.now()
     is_future = lesson.starts_at > now
@@ -575,7 +628,7 @@ def journal_lesson(request, pk):
         student.debt = debts.get(student.pk, Decimal("0"))
 
     # Neighbour lessons of the same group: quick moving through the journal
-    group_lessons = Lesson.objects.filter(group_id=lesson.group_id)
+    group_lessons = lessons_for(request.user).filter(group_id=lesson.group_id)
     previous_lesson = group_lessons.filter(starts_at__lt=lesson.starts_at).order_by("-starts_at").first()
     next_lesson = group_lessons.filter(starts_at__gt=lesson.starts_at).order_by("starts_at").first()
 
@@ -603,7 +656,7 @@ def journal_lesson(request, pk):
 
 # ───────────────────────── Debts ─────────────────────────
 
-@login_required
+@admin_page
 def call_list(request):
     """The list "to call parents": students with an overdue debt."""
     today = timezone.localdate()
@@ -681,7 +734,7 @@ def month_summary(month):
     }
 
 
-@login_required
+@admin_page
 def finance(request):
     today = timezone.localdate()
     month = parse_month(request.GET.get("month"), today)

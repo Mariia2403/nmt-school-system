@@ -91,7 +91,7 @@
             <a href="{% url 'school:student_detail' s.pk %}" class="text-decoration-none text-body fw-semibold">{{ s.last_name }} {{ s.first_name }}</a>
             {% if s.debt %}
               <span class="badge text-bg-danger ms-1" title="Прострочено понад {{ overdue_days }} дн.">
-                <i class="bi bi-exclamation-circle"></i> борг {{ s.debt|floatformat:"0g" }} ₴
+                <i class="bi bi-exclamation-circle"></i> борг{% if is_school_admin %} {{ s.debt|floatformat:"0g" }} ₴{% endif %}
               </span>
             {% endif %}
           </div>

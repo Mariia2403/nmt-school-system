@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Головна — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+  <h1 class="h3 mb-0">Вітаємо, {{ teacher.first_name }}!</h1>
+  <span class="text-muted">{{ today|date:"j E Y, l" }}</span>
+</div>
+
+<div class="row g-3 mb-4">
+  <!-- Lessons today -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold d-flex justify-content-between">
+        <span><i class="bi bi-calendar-event"></i> Мої заняття сьогодні</span>
+        <a href="{% url 'school:journal' %}" class="small fw-normal text-decoration-none">Журнал →</a>
+      </div>
+      <div class="list-group list-group-flush">
+        {% for lesson in today_lessons %}
+          <a href="{% url 'school:journal_lesson' lesson.pk %}"
+             class="list-group-item list-group-item-action d-flex justify-content-between align-items-center {% if lesson.needs_marks %}list-group-item-danger{% endif %}">
+            <div>
+              <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.full_name }}
+              <div class="small text-muted">{{ lesson.topic|default:"без теми" }}</div>
+            </div>
+            {% if lesson.needs_marks %}
+              <span class="badge text-bg-danger">відмітити</span>
+            {% elif lesson.marked %}
+              <span class="badge text-bg-success">присутні {{ lesson.present }} / {{ lesson.marked }}</span>
+            {% else %}
+              <span class="badge text-bg-primary">{{ lesson.get_status_display }}</span>
+            {% endif %}
+          </a>
+        {% empty %}
+          <div class="list-group-item text-muted">Сьогодні у вас занять немає.</div>
+        {% endfor %}
+      </div>
+      <div class="card-header bg-white fw-semibold border-top"><i class="bi bi-calendar-week"></i> Найближчі заняття</div>
+      <ul class="list-group list-group-flush">
+        {% for lesson in next_lessons %}
+          <li class="list-group-item">
+            <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> · {{ lesson.group.full_name }}
+            {% if lesson.teacher_id != lesson.group.teacher_id %}<span class="badge text-bg-warning">заміна</span>{% endif %}
+          </li>
+        {% empty %}
+          <li class="list-group-item text-muted">Запланованих занять немає.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  <!-- Forgotten journals -->
+  <div class="col-lg-5">
+    <div class="card shadow-sm h-100 {% if unmarked %}border-danger{% endif %}">
+      <div class="card-header bg-white fw-semibold">
+        <i class="bi bi-exclamation-triangle {% if unmarked %}text-danger{% endif %}"></i> Не відмічені заняття
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for lesson in unmarked %}
+          <li class="list-group-item">
+            <a href="{% url 'school:journal_lesson' lesson.pk %}" class="text-decoration-none">
+              {{ lesson.starts_at|date:"d.m H:i" }} · {{ lesson.group.full_name }}
+            </a>
+          </li>
+        {% empty %}
+          <li class="list-group-item text-success small"><i class="bi bi-check-circle"></i> Усі ваші заняття відмічено.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- My groups -->
+<h2 class="h5 mb-3"><i class="bi bi-collection"></i> Мої групи</h2>
+<div class="row g-3">
+  {% for g in groups %}
+    <div class="col-md-6 col-xl-4">
+      <a href="{% url 'school:group_detail' g.pk %}" class="card shadow-sm h-100 text-decoration-none text-body">
+        <div class="card-body">
+          <div class="fw-semibold">{{ g.full_name }}</div>
+          <div class="small text-muted">{{ g.get_level_display }} · учнів: {{ g.taken }}</div>
+          <div class="small mt-1"><i class="bi bi-clock"></i> {{ g.schedule_text }}</div>
+        </div>
+      </a>
+    </div>
+  {% empty %}
+    <div class="col-12"><div class="alert alert-light border">У вас поки немає груп.</div></div>
+  {% endfor %}
+</div>
+{% endblock %}

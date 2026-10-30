@@ -5,7 +5,7 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h3 mb-0">Учні</h1>
-  {% if user.is_staff %}
+  {% if is_school_admin %}
     <a href="{% url 'admin:school_student_add' %}" class="btn btn-primary btn-sm">
       <i class="bi bi-plus-lg"></i> Додати учня
     </a>
@@ -65,7 +65,7 @@
           <th>Телефон</th>
           <th>Батьки</th>
           <th>Групи</th>
-          <th class="text-end" title="Прострочено понад {{ overdue_days }} дн.">Прострочений борг</th>
+          <th class="text-end" title="Прострочено понад {{ overdue_days }} дн.">{% if is_school_admin %}Прострочений борг{% else %}Оплата{% endif %}</th>
         </tr>
       </thead>
       <tbody>
@@ -96,8 +96,11 @@
               {% endfor %}
             </td>
             <td class="text-end text-nowrap">
-              {% if student.debt %}
+              {% if student.debt and is_school_admin %}
                 <span class="text-danger fw-semibold">{{ student.debt|floatformat:"0g" }} ₴</span>
+              {% elif student.debt %}
+                <!-- A teacher sees only the fact of a debt, not the amount -->
+                <span class="badge text-bg-danger">є борг</span>
               {% else %}
                 <span class="text-muted">—</span>
               {% endif %}
