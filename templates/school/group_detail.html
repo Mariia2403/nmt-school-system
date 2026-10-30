@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}{{ group.full_name }} — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:group_list' %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До списку груп
+</a>
+
+<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mt-2 mb-3">
+  <div>
+    <h1 class="h3 mb-1">{{ group.full_name }}</h1>
+    <span class="text-muted">
+      {{ group.get_level_display }} рівень · {{ group.teacher }} ·
+      {{ group.start_date|date:"d.m.Y" }} — {{ group.end_date|date:"d.m.Y"|default:"…" }}
+    </span>
+  </div>
+  {% if user.is_staff %}
+    <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="btn btn-outline-primary btn-sm">
+      <i class="bi bi-pencil"></i> Редагувати групу і розклад
+    </a>
+  {% endif %}
+</div>
+
+<!-- Main numbers -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="small text-muted"><i class="bi bi-clock"></i> Розклад</div>
+        <ul class="list-unstyled mb-0 mt-1">
+          {% for slot in group.schedule.all %}
+            <li><strong>{{ slot.get_weekday_display }}</strong> {{ slot.start_time|time:"H:i" }}–{{ slot.end_time|time:"H:i" }}</li>
+          {% empty %}
+            <li class="text-danger small">Розклад не задано</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="small text-muted"><i class="bi bi-people"></i> Учнів</div>
+        <div class="display-6">{{ taken }} <span class="fs-5 text-muted">/ {{ group.max_students }}</span></div>
+        <div class="small {% if free <= 0 %}text-danger{% else %}text-muted{% endif %}">
+          {% if free <= 0 %}місць немає{% else %}вільних місць: {{ free }}{% endif %}
+          {% if suspended_count %} · призупинено: {{ suspended_count }}{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="small text-muted"><i class="bi bi-journal-check"></i> Проведено занять</div>
+        <div class="display-6">{{ held_count }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100 {% if debtors_count %}border-danger{% endif %}">
+      <div class="card-body">
+        <div class="small text-muted"><i class="bi bi-exclamation-triangle"></i> Прострочені борги</div>
+        <div class="display-6 {% if debtors_count %}text-danger{% endif %}">{{ debt_total|floatformat:"0g" }} ₴</div>
+        <div class="small text-muted">боржників у групі: {{ debtors_count }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Students of the group -->
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-people"></i> Склад групи</div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Учень</th>
+          <th>Тариф</th>
+          <th>Телефон батьків</th>
+          <th class="text-end">Відвідуваність</th>
+          <th class="text-end">Останній бал НМТ</th>
+          <th class="text-end">Прострочений борг</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in contracts %}
+          <tr class="{% if c.debt %}table-danger{% endif %}">
+            <td>
+              <a href="{% url 'school:student_detail' c.student.pk %}" class="fw-semibold text-decoration-none">
+                {{ c.student.last_name }} {{ c.student.first_name }}
+              </a>
+              {% if c.debt %}
+                <i class="bi bi-exclamation-circle-fill text-danger ms-1" title="Прострочена оплата"></i>
+              {% endif %}
+              {% if c.status == "suspended" %}
+                <span class="badge text-bg-warning ms-1">призупинено</span>
+              {% endif %}
+              <div class="small text-muted">з {{ c.start_date|date:"d.m.Y" }}</div>
+            </td>
+            <td class="small">{{ c.tariff.name }}</td>
+            <td class="text-nowrap">
+              {% if c.student.parent_phone %}
+                <a href="tel:{{ c.student.parent_phone }}" class="text-decoration-none">{{ c.student.parent_phone }}</a>
+              {% else %}—{% endif %}
+              <div class="small text-muted">{{ c.student.parent_name }}</div>
+            </td>
+            <td class="text-end">
+              {% if c.attendance_pct is None %}
+                <span class="text-muted">—</span>
+              {% else %}
+                <span class="{% if c.attendance_pct < 70 %}text-danger fw-semibold{% elif c.attendance_pct < 85 %}text-warning{% endif %}">{{ c.attendance_pct }}%</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              {% if c.last_score %}
+                <strong>{{ c.last_score.score }}</strong>
+                <div class="small text-muted">{{ c.last_score.test.held_at|date:"d.m.Y" }}</div>
+              {% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+            <td class="text-end text-nowrap">
+              {% if c.debt %}
+                <span class="text-danger fw-semibold">{{ c.debt|floatformat:"0g" }} ₴</span>
+              {% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="text-center text-muted py-4">У групі поки немає учнів.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer bg-white small text-muted">
+    Червоним — прострочено понад {{ overdue_days }} дн. за цією групою.
+    Відвідуваність нижче 70% — теж червоним: варто поговорити з учнем.
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- Next lessons -->
+  <div class="col-lg-5">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-calendar-week"></i> Найближчі заняття</div>
+      <ul class="list-group list-group-flush">
+        {% for lesson in next_lessons %}
+          <li class="list-group-item">
+            <strong>{{ lesson.starts_at|date:"D, d.m H:i" }}</strong>
+            <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
+            {% if lesson.teacher_id != group.teacher_id %}
+              <div class="small text-warning"><i class="bi bi-arrow-left-right"></i> заміна: {{ lesson.teacher }}</div>
+            {% endif %}
+          </li>
+        {% empty %}
+          <li class="list-group-item text-muted">Запланованих занять немає.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  <!-- Past lessons -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm h-100">
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-clock-history"></i> Останні заняття</div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr><th>Дата</th><th>Тема</th><th>Статус</th><th class="text-end">Присутні</th></tr></thead>
+          <tbody>
+            {% for lesson in past_lessons %}
+              <tr>
+                <td class="text-nowrap">{{ lesson.starts_at|date:"d.m H:i" }}</td>
+                <td class="small">{{ lesson.topic|default:"—" }}</td>
+                <td>
+                  <span class="badge text-bg-{% if lesson.status == 'held' %}success{% elif lesson.status == 'cancelled' %}secondary{% else %}warning{% endif %}">
+                    {{ lesson.get_status_display }}
+                  </span>
+                </td>
+                <td class="text-end">
+                  {% if lesson.marked %}{{ lesson.present }} / {{ lesson.marked }}
+                  {% elif lesson.status == "held" %}<span class="text-danger small">не відмічено</span>
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="text-muted">Занять ще не було.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

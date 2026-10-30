@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Групи — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0"><i class="bi bi-collection"></i> Групи</h1>
+  {% if user.is_staff %}
+    <a href="{% url 'admin:school_studygroup_add' %}" class="btn btn-primary btn-sm">
+      <i class="bi bi-plus-lg"></i> Додати групу
+    </a>
+  {% endif %}
+</div>
+
+<!-- Filters: a GET form, so the filters stay in the address -->
+<form method="get" class="card card-body shadow-sm mb-3">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-4">
+      <label class="form-label small text-muted mb-1">Предмет</label>
+      <select name="subject" class="form-select">
+        <option value="">Усі</option>
+        {% for s in subjects %}
+          <option value="{{ s.pk }}" {% if subject == s.pk|stringformat:"d" %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label small text-muted mb-1">Викладач</label>
+      <select name="teacher" class="form-select">
+        <option value="">Усі</option>
+        {% for t in teachers %}
+          <option value="{{ t.pk }}" {% if teacher == t.pk|stringformat:"d" %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label small text-muted mb-1">Показати</label>
+      <select name="show" class="form-select">
+        <option value="">Ті, що навчаються зараз</option>
+        <option value="all" {% if show == "all" %}selected{% endif %}>Усі групи (також завершені)</option>
+      </select>
+    </div>
+    <div class="col-md-2 d-flex gap-2">
+      <button type="submit" class="btn btn-primary flex-fill"><i class="bi bi-funnel"></i> Показати</button>
+      <a href="{% url 'school:group_list' %}" class="btn btn-outline-secondary" title="Скинути фільтри"><i class="bi bi-x-lg"></i></a>
+    </div>
+  </div>
+</form>
+
+<div class="row g-3">
+  {% for g in groups %}
+    <div class="col-md-6 col-xl-4">
+      <!-- The whole card opens the group -->
+      <a href="{% url 'school:group_detail' g.pk %}" class="card shadow-sm h-100 text-decoration-none text-body {% if g.debtors_count %}border-danger{% endif %}">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-start mb-1">
+            <h2 class="h6 fw-semibold mb-0">{{ g.full_name }}</h2>
+            <span class="badge text-bg-light border">{{ g.get_level_display }}</span>
+          </div>
+          <div class="small text-muted mb-2"><i class="bi bi-person"></i> {{ g.teacher }}</div>
+          <div class="small mb-2"><i class="bi bi-clock"></i> {{ g.schedule_text }}</div>
+
+          <!-- Places in the group -->
+          <div class="d-flex justify-content-between small">
+            <span>Учнів: <strong>{{ g.taken }}</strong> з {{ g.max_students }}</span>
+            <span class="{% if g.free <= 0 %}text-danger{% elif g.free <= 2 %}text-warning{% else %}text-success{% endif %}">
+              {% if g.free <= 0 %}місць немає{% else %}вільно: {{ g.free }}{% endif %}
+            </span>
+          </div>
+          <div class="progress mt-1 mb-2" style="height: 6px;">
+            <div class="progress-bar {% if g.free <= 0 %}bg-danger{% elif g.free <= 2 %}bg-warning{% endif %}" style="width: {{ g.fill_pct }}%"></div>
+          </div>
+
+          {% if g.debtors_count %}
+            <div class="small text-danger">
+              <i class="bi bi-exclamation-circle-fill"></i>
+              Боржників: {{ g.debtors_count }} · {{ g.debt_total|floatformat:"0g" }} ₴
+            </div>
+          {% endif %}
+        </div>
+        <div class="card-footer bg-white small text-muted">
+          {% if g.next_lesson %}
+            Наступне заняття: <strong>{{ g.next_lesson.starts_at|date:"D, d.m H:i" }}</strong>
+          {% else %}
+            Запланованих занять немає
+          {% endif %}
+        </div>
+      </a>
+    </div>
+  {% empty %}
+    <div class="col-12"><div class="alert alert-light border">Груп не знайдено.</div></div>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -14,8 +14,8 @@ from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 
 from .models import (
-    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Test,
-    months_between, next_month,
+    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
+    Teacher, Test, TestResult, months_between, next_month,
 )
 
 ZERO = Value(Decimal("0"))
@@ -278,6 +278,156 @@ def student_detail(request, pk):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
     }
     return render(request, "school/student_detail.html", context)
+
+
+# ───────────────────────── Groups ─────────────────────────
+
+def overdue_by_group(today):
+    """Overdue debts split by group: {group id: {student id: amount}}.
+    It uses the same overdue_invoices() as all other pages."""
+    result = {}
+    for inv in overdue_invoices(today):
+        students = result.setdefault(inv.contract.group_id, {})
+        students[inv.contract.student_id] = students.get(inv.contract.student_id, Decimal("0")) + inv.debt_value
+    return result
+
+
+def running_groups(today):
+    """Groups that study now: already started and not finished yet."""
+    return StudyGroup.objects.filter(start_date__lte=today).filter(
+        Q(end_date__isnull=True) | Q(end_date__gte=today)
+    )
+
+
+@login_required
+def group_list(request):
+    today = timezone.localdate()
+    now = timezone.now()
+    subject = request.GET.get("subject", "")
+    teacher = request.GET.get("teacher", "")
+    show = request.GET.get("show", "")  # "" = only groups that study now, "all" = all groups
+
+    groups = (
+        StudyGroup.objects
+        .select_related("subject", "teacher")
+        .prefetch_related("schedule")
+        .annotate(
+            active_count=Count("contracts", filter=Q(contracts__status=Contract.Status.ACTIVE), distinct=True),
+            # A suspended student still keeps the place in the group
+            taken=Count("contracts", filter=Q(contracts__status__in=Contract.OPEN_STATUSES), distinct=True),
+        )
+    )
+    if show != "all":
+        groups = groups.filter(pk__in=running_groups(today))
+    if subject.isdigit():
+        groups = groups.filter(subject_id=int(subject))
+    if teacher.isdigit():
+        groups = groups.filter(teacher_id=int(teacher))
+
+    groups = list(groups)
+    debts = overdue_by_group(today)
+    # The next lesson of every group in ONE query: we take the planned lessons from now
+    next_lessons = {}
+    for lesson in Lesson.objects.filter(
+        group__in=groups, starts_at__gte=now, status=Lesson.Status.PLANNED
+    ).order_by("starts_at"):
+        next_lessons.setdefault(lesson.group_id, lesson)  # keep only the first (the nearest)
+
+    for group in groups:
+        group_debts = debts.get(group.id, {})
+        group.debtors_count = len(group_debts)
+        group.debt_total = sum(group_debts.values(), Decimal("0"))
+        group.free = group.max_students - group.taken
+        group.fill_pct = round(group.taken * 100 / group.max_students) if group.max_students else 0
+        group.next_lesson = next_lessons.get(group.id)
+
+    context = {
+        "groups": groups,
+        "subjects": Subject.objects.filter(groups__isnull=False).distinct(),
+        "teachers": Teacher.objects.filter(groups__isnull=False).distinct(),
+        "subject": subject,
+        "teacher": teacher,
+        "show": show,
+        "overdue_days": settings.DEBT_OVERDUE_DAYS,
+    }
+    return render(request, "school/group_list.html", context)
+
+
+@login_required
+def group_detail(request, pk):
+    today = timezone.localdate()
+    now = timezone.now()
+    group = get_object_or_404(
+        StudyGroup.objects.select_related("subject", "teacher").prefetch_related("schedule"), pk=pk
+    )
+
+    # Students of the group = open contracts (active + suspended)
+    contracts = list(
+        group.contracts
+        .filter(status__in=Contract.OPEN_STATUSES)
+        .select_related("student", "tariff")
+        .order_by("student__last_name", "student__first_name")
+    )
+
+    # Attendance of every student in THIS group, in one query
+    attendance = {
+        row["student"]: row
+        for row in Attendance.objects.filter(lesson__group=group)
+        .values("student")
+        .annotate(
+            total=Count("id"),
+            present=Count("id", filter=Q(status__in=[Attendance.Status.PRESENT, Attendance.Status.LATE])),
+        )
+    }
+    # The last result on the NMT scale (100-200) of every student in this subject
+    last_scores = {}
+    for result in (
+        TestResult.objects
+        .filter(test__subject=group.subject, test__kind__in=Test.NMT_SCALE_KINDS,
+                student__in=[c.student_id for c in contracts])
+        .select_related("test")
+        .order_by("-test__held_at")
+    ):
+        last_scores.setdefault(result.student_id, result)  # the first one is the newest
+
+    debts = overdue_by_group(today).get(group.id, {})
+    for c in contracts:
+        stats = attendance.get(c.student_id)
+        c.attendance_pct = round(stats["present"] * 100 / stats["total"]) if stats and stats["total"] else None
+        c.last_score = last_scores.get(c.student_id)
+        c.debt = debts.get(c.student_id, Decimal("0"))
+
+    active_count = sum(c.status == Contract.Status.ACTIVE for c in contracts)
+    next_lessons = group.lessons.filter(starts_at__gte=now).exclude(
+        status=Lesson.Status.CANCELLED
+    ).select_related("teacher").order_by("starts_at")[:6]
+    past_lessons = (
+        group.lessons.filter(starts_at__lt=now)
+        .select_related("teacher")
+        .annotate(
+            marked=Count("attendance"),
+            present=Count("attendance", filter=Q(
+                attendance__status__in=[Attendance.Status.PRESENT, Attendance.Status.LATE]
+            )),
+        )
+        .order_by("-starts_at")[:10]
+    )
+    held_count = group.lessons.filter(status=Lesson.Status.HELD).count()
+
+    context = {
+        "group": group,
+        "contracts": contracts,
+        "suspended_count": len(contracts) - active_count,
+        "taken": len(contracts),
+        "free": group.max_students - len(contracts),
+        "debtors_count": len(debts),
+        "debt_total": sum(debts.values(), Decimal("0")),
+        "next_lessons": next_lessons,
+        "past_lessons": past_lessons,
+        "held_count": held_count,
+        "overdue_days": settings.DEBT_OVERDUE_DAYS,
+    }
+    return render(request, "school/group_detail.html", context)
 
 
 # ───────────────────────── Debts ─────────────────────────

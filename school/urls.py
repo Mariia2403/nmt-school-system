@@ -14,6 +14,8 @@ urlpatterns = [
     # <int:pk> takes the number from the address, for example /students/5/ -> pk=5
     path("students/<int:pk>/", views.student_detail, name="student_detail"),
     # Students with an overdue debt: the administrator calls their parents
+    path("groups/", views.group_list, name="group_list"),
+    path("groups/<int:pk>/", views.group_detail, name="group_detail"),
     path("debts/call-list/", views.call_list, name="call_list"),
     # Money of the school. The month is in the address: /finance/?month=2026-10
     path("finance/", views.finance, name="finance"),
