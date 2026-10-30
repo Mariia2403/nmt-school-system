@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Журнал: {{ lesson.group.full_name }} — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+  <a href="{% url 'school:journal' %}?date={{ lesson.starts_at|date:'Y-m-d' }}" class="text-decoration-none small">
+    <i class="bi bi-arrow-left"></i> До журналу за {{ lesson.starts_at|date:"d.m.Y" }}
+  </a>
+  <!-- Previous / next lesson of the same group -->
+  <div class="btn-group btn-group-sm">
+    {% if previous_lesson %}
+      <a href="{% url 'school:journal_lesson' previous_lesson.pk %}" class="btn btn-outline-secondary">
+        <i class="bi bi-chevron-left"></i> {{ previous_lesson.starts_at|date:"d.m" }}
+      </a>
+    {% endif %}
+    {% if next_lesson %}
+      <a href="{% url 'school:journal_lesson' next_lesson.pk %}" class="btn btn-outline-secondary">
+        {{ next_lesson.starts_at|date:"d.m" }} <i class="bi bi-chevron-right"></i>
+      </a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="mt-2 mb-3">
+  <h1 class="h3 mb-1">
+    <a href="{% url 'school:group_detail' lesson.group.pk %}" class="text-decoration-none text-body">{{ lesson.group.full_name }}</a>
+  </h1>
+  <span class="text-muted">
+    {{ lesson.starts_at|date:"l, d.m.Y, H:i" }} · {{ lesson.teacher }}
+    {% if lesson.teacher_id != lesson.group.teacher_id %}<span class="badge text-bg-warning">заміна</span>{% endif %}
+  </span>
+</div>
+
+{% if is_future %}
+  <!-- Future lesson: only information, no form -->
+  <div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    Заняття ще не почалося. Відмітити відвідуваність можна буде {{ lesson.starts_at|date:"d.m.Y" }} з {{ lesson.starts_at|date:"H:i" }}.
+  </div>
+  <div class="card shadow-sm">
+    <div class="card-header bg-white fw-semibold">Очікуються ({{ students|length }})</div>
+    <ul class="list-group list-group-flush">
+      {% for s in students %}
+        <li class="list-group-item">
+          {{ s.last_name }} {{ s.first_name }}
+          {% if s.debt %}<i class="bi bi-exclamation-circle-fill text-danger ms-1" title="Прострочена оплата"></i>{% endif %}
+        </li>
+      {% empty %}
+        <li class="list-group-item text-muted">У групі немає учнів.</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% else %}
+<form method="post">
+  {% csrf_token %}
+
+  <!-- Lesson: status and topic -->
+  <div class="card card-body shadow-sm mb-3">
+    <div class="row g-3">
+      <div class="col-md-4">
+        <label for="lesson_status" class="form-label small text-muted mb-1">Статус заняття</label>
+        <select name="lesson_status" id="lesson_status" class="form-select">
+          {% for value, label in status_choices %}
+            <option value="{{ value }}" {% if value == form_status %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-8">
+        <label for="topic" class="form-label small text-muted mb-1">Тема заняття</label>
+        <input type="text" name="topic" id="topic" value="{{ lesson.topic }}" maxlength="200" class="form-control">
+      </div>
+    </div>
+  </div>
+
+  <!-- Attendance (hidden if the lesson is cancelled or rescheduled) -->
+  <div class="card shadow-sm mb-3" id="attendance-card">
+    <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <span class="fw-semibold">
+        Відвідуваність
+        <span class="text-muted fw-normal small">· відмічено {{ marked_count }} з {{ students|length }}</span>
+      </span>
+      <button type="button" class="btn btn-outline-success btn-sm" id="all-present">
+        <i class="bi bi-check2-all"></i> Усі присутні
+      </button>
+    </div>
+    <div class="list-group list-group-flush">
+      {% for s in students %}
+        <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2 {% if not s.mark %}bg-light{% endif %}">
+          <div>
+            <a href="{% url 'school:student_detail' s.pk %}" class="text-decoration-none text-body fw-semibold">{{ s.last_name }} {{ s.first_name }}</a>
+            {% if s.debt %}
+              <span class="badge text-bg-danger ms-1" title="Прострочено понад {{ overdue_days }} дн.">
+                <i class="bi bi-exclamation-circle"></i> борг {{ s.debt|floatformat:"0g" }} ₴
+              </span>
+            {% endif %}
+          </div>
+          <!-- Radio buttons look like a group of buttons (Bootstrap "btn-check") -->
+          <div class="btn-group btn-group-sm" role="group">
+            {% for value, label, color in buttons %}
+              <input type="radio" class="btn-check" name="student_{{ s.pk }}" id="s{{ s.pk }}_{{ value }}"
+                     value="{{ value }}" autocomplete="off" {% if s.mark == value %}checked{% endif %}>
+              <label class="btn btn-outline-{{ color }}" for="s{{ s.pk }}_{{ value }}">{{ label }}</label>
+            {% endfor %}
+          </div>
+        </div>
+      {% empty %}
+        <div class="list-group-item text-muted">На дату заняття в групі немає учнів.</div>
+      {% endfor %}
+    </div>
+    {% if debtors_count %}
+      <div class="card-footer bg-white small text-danger">
+        <i class="bi bi-exclamation-circle"></i> Боржників на занятті: {{ debtors_count }}. Нагадайте про оплату або передайте адміністратору.
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="d-flex gap-2">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Зберегти</button>
+    <a href="{% url 'school:journal' %}?date={{ lesson.starts_at|date:'Y-m-d' }}" class="btn btn-outline-secondary">Скасувати</a>
+  </div>
+</form>
+
+<script>
+  // "All present": check the "present" button of every student
+  document.getElementById("all-present").addEventListener("click", function () {
+    document.querySelectorAll('input.btn-check[value="present"]').forEach(function (input) {
+      input.checked = true;
+    });
+  });
+
+  // Hide attendance if the lesson is cancelled or rescheduled.
+  // The server also deletes marks in this case, so it works even without JavaScript.
+  var statusSelect = document.getElementById("lesson_status");
+  function toggleAttendance() {
+    document.getElementById("attendance-card").hidden = statusSelect.value !== "held";
+  }
+  statusSelect.addEventListener("change", toggleAttendance);
+  toggleAttendance();
+</script>
+{% endif %}
+{% endblock %}

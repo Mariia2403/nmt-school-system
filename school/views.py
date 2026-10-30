@@ -6,11 +6,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
-from django.shortcuts import get_object_or_404, render
+from django.db import transaction
+from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from .models import (
@@ -428,6 +430,175 @@ def group_detail(request, pk):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
     }
     return render(request, "school/group_detail.html", context)
+
+
+# ───────────────────────── Journal ─────────────────────────
+
+# Buttons in the journal: (value, short text, Bootstrap color)
+ATTENDANCE_BUTTONS = [
+    (Attendance.Status.PRESENT, "Присутній", "success"),
+    (Attendance.Status.LATE, "Запізнився", "warning"),
+    (Attendance.Status.ABSENT, "Відсутній", "danger"),
+    (Attendance.Status.EXCUSED, "Поважна", "secondary"),
+]
+# Statuses that can be chosen for a lesson that has already started
+PAST_LESSON_STATUSES = [Lesson.Status.HELD, Lesson.Status.CANCELLED, Lesson.Status.RESCHEDULED]
+
+
+def parse_day(value, today):
+    """"2026-10-30" from the address -> date(2026, 10, 30). A wrong value -> today."""
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return today
+
+
+def lesson_students(lesson):
+    """Students who must be in the journal of this lesson:
+    everybody whose contract for the group was valid on the lesson day
+    (suspended students do not come), plus anybody who already has a mark
+    (so old marks never disappear from the form)."""
+    day = timezone.localtime(lesson.starts_at).date()
+    ids = set(
+        Contract.objects
+        .filter(group_id=lesson.group_id, start_date__lte=day)
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=day))
+        .exclude(status=Contract.Status.SUSPENDED)
+        .values_list("student_id", flat=True)
+    )
+    ids |= set(lesson.attendance.values_list("student_id", flat=True))
+    return Student.objects.filter(pk__in=ids).order_by("last_name", "first_name")
+
+
+def with_marks(lessons):
+    """Add to lessons: marked (how many marks) and present (present + late)."""
+    return lessons.annotate(
+        marked=Count("attendance"),
+        present=Count("attendance", filter=Q(
+            attendance__status__in=[Attendance.Status.PRESENT, Attendance.Status.LATE]
+        )),
+    )
+
+
+@login_required
+def journal(request):
+    today = timezone.localdate()
+    now = timezone.now()
+    day = parse_day(request.GET.get("date"), today)
+
+    lessons = with_marks(
+        Lesson.objects.filter(starts_at__date=day)
+        .select_related("group__subject", "group__teacher", "teacher")
+    ).order_by("starts_at")
+    for lesson in lessons:
+        lesson.is_future = lesson.starts_at > now
+        # A lesson has started, it was not cancelled, but nobody marked the students
+        lesson.needs_marks = (not lesson.is_future and lesson.marked == 0
+                              and lesson.status in [Lesson.Status.PLANNED, Lesson.Status.HELD])
+
+    # Lessons of the last 30 days without any marks: the teacher forgot the journal
+    unmarked = with_marks(
+        Lesson.objects.filter(
+            starts_at__lt=now, starts_at__gte=now - timedelta(days=30),
+            status__in=[Lesson.Status.PLANNED, Lesson.Status.HELD],
+        ).select_related("group__subject", "teacher")
+    ).filter(marked=0).order_by("starts_at")
+
+    context = {
+        "day": day,
+        "today": today,
+        "previous_day": (day - timedelta(days=1)).isoformat(),
+        "next_day": (day + timedelta(days=1)).isoformat(),
+        "lessons": lessons,
+        "unmarked": unmarked,
+    }
+    return render(request, "school/journal.html", context)
+
+
+@login_required
+def journal_lesson(request, pk):
+    """Attendance form of one lesson. GET shows the form, POST saves it."""
+    lesson = get_object_or_404(
+        Lesson.objects.select_related("group__subject", "group__teacher", "teacher"), pk=pk
+    )
+    now = timezone.now()
+    is_future = lesson.starts_at > now
+    students = list(lesson_students(lesson))
+
+    if request.method == "POST":
+        # You cannot mark a lesson that has not started yet
+        if is_future:
+            messages.error(request, "Заняття ще не почалося — відмічати відвідуваність зарано.")
+            return redirect("school:journal_lesson", pk=lesson.pk)
+
+        new_status = request.POST.get("lesson_status")
+        if new_status not in PAST_LESSON_STATUSES:
+            messages.error(request, "Оберіть статус заняття.")
+            return redirect("school:journal_lesson", pk=lesson.pk)
+
+        # atomic: the lesson and all marks are saved together, or nothing is saved
+        with transaction.atomic():
+            lesson.topic = request.POST.get("topic", "").strip()[:200]
+            lesson.status = new_status
+            lesson.save(update_fields=["topic", "status"])
+
+            if new_status != Lesson.Status.HELD:
+                # Nobody can be "present" at a cancelled lesson
+                deleted, _ = lesson.attendance.all().delete()
+                text = f"Заняття позначено як «{lesson.get_status_display()}»."
+                if deleted:
+                    text += f" Видалено відміток: {deleted}."
+                messages.info(request, text)
+            else:
+                saved, missing = 0, []
+                # We read marks ONLY for students of this lesson,
+                # so a changed form cannot add a stranger to the journal
+                for student in students:
+                    value = request.POST.get(f"student_{student.pk}")
+                    if value not in Attendance.Status.values:
+                        missing.append(str(student))
+                        continue
+                    Attendance.objects.update_or_create(
+                        lesson=lesson, student=student, defaults={"status": value},
+                    )
+                    saved += 1
+                messages.success(request, f"Журнал збережено: відмічено {saved} учн.")
+                if missing:
+                    messages.warning(request, "Не відмічено: " + ", ".join(missing))
+        return redirect("school:journal_lesson", pk=lesson.pk)
+
+    # GET: show the form
+    marks = dict(lesson.attendance.values_list("student_id", "status"))
+    debts = overdue_by_group(timezone.localdate()).get(lesson.group_id, {})
+    for student in students:
+        student.mark = marks.get(student.pk)
+        student.debt = debts.get(student.pk, Decimal("0"))
+
+    # Neighbour lessons of the same group: quick moving through the journal
+    group_lessons = Lesson.objects.filter(group_id=lesson.group_id)
+    previous_lesson = group_lessons.filter(starts_at__lt=lesson.starts_at).order_by("-starts_at").first()
+    next_lesson = group_lessons.filter(starts_at__gt=lesson.starts_at).order_by("starts_at").first()
+
+    # For a planned lesson that has already started we suggest "held"
+    if lesson.status == Lesson.Status.PLANNED and not is_future:
+        form_status = Lesson.Status.HELD
+    else:
+        form_status = lesson.status
+
+    context = {
+        "lesson": lesson,
+        "students": students,
+        "is_future": is_future,
+        "buttons": ATTENDANCE_BUTTONS,
+        "status_choices": [(s, s.label) for s in PAST_LESSON_STATUSES],
+        "form_status": form_status,
+        "marked_count": len(marks),
+        "debtors_count": sum(1 for s in students if s.debt),
+        "previous_lesson": previous_lesson,
+        "next_lesson": next_lesson,
+        "overdue_days": settings.DEBT_OVERDUE_DAYS,
+    }
+    return render(request, "school/journal_lesson.html", context)
 
 
 # ───────────────────────── Debts ─────────────────────────

@@ -5,6 +5,7 @@ Secret data (secret key, database password) is read from the .env file.
 import os
 from pathlib import Path
 
+from django.contrib.messages import constants as message_constants
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -92,6 +93,11 @@ LANGUAGE_CODE = "uk"
 TIME_ZONE = "Europe/Kyiv"
 USE_I18N = True
 USE_TZ = True
+
+
+# Messages after saving (messages.success / error / ...).
+# Django calls an error "error", but Bootstrap needs "danger" for the red color.
+MESSAGE_TAGS = {message_constants.ERROR: "danger"}
 
 
 # School rules

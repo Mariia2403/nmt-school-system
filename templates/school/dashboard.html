@@ -75,12 +75,17 @@
   <!-- Lessons -->
   <div class="col-lg-7">
     <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-semibold"><i class="bi bi-calendar-event"></i> Заняття сьогодні</div>
+      <div class="card-header bg-white fw-semibold d-flex justify-content-between">
+        <span><i class="bi bi-calendar-event"></i> Заняття сьогодні</span>
+        <a href="{% url 'school:journal' %}" class="small fw-normal text-decoration-none">Журнал →</a>
+      </div>
       <ul class="list-group list-group-flush">
         {% for lesson in today_lessons %}
           <li class="list-group-item d-flex justify-content-between align-items-center">
             <div>
-              <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.full_name }}
+              <a href="{% url 'school:journal_lesson' lesson.pk %}" class="text-decoration-none text-body">
+                <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.full_name }}
+              </a>
               <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
               <div class="small text-muted">{{ lesson.teacher }}</div>
             </div>

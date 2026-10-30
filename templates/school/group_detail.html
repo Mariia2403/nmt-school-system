@@ -167,7 +167,9 @@
           <tbody>
             {% for lesson in past_lessons %}
               <tr>
-                <td class="text-nowrap">{{ lesson.starts_at|date:"d.m H:i" }}</td>
+                <td class="text-nowrap">
+                  <a href="{% url 'school:journal_lesson' lesson.pk %}" class="text-decoration-none">{{ lesson.starts_at|date:"d.m H:i" }}</a>
+                </td>
                 <td class="small">{{ lesson.topic|default:"—" }}</td>
                 <td>
                   <span class="badge text-bg-{% if lesson.status == 'held' %}success{% elif lesson.status == 'cancelled' %}secondary{% else %}warning{% endif %}">
@@ -176,7 +178,8 @@
                 </td>
                 <td class="text-end">
                   {% if lesson.marked %}{{ lesson.present }} / {{ lesson.marked }}
-                  {% elif lesson.status == "held" %}<span class="text-danger small">не відмічено</span>
+                  {% elif lesson.status == "held" or lesson.status == "planned" %}
+                    <a href="{% url 'school:journal_lesson' lesson.pk %}" class="text-danger small">не відмічено →</a>
                   {% else %}—{% endif %}
                 </td>
               </tr>
