@@ -18,8 +18,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from school.models import (
-    Attendance, Contract, Expense, GroupSchedule, Invoice, Lesson, Payment, Refund, Salary,
-    Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
+    Attendance, Contract, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
+    Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
 )
 
 LESSON_MINUTES = 90  # one lesson lasts 1.5 hours
@@ -47,6 +47,30 @@ TOPICS = {
     "Англійська мова": ["Present Tenses", "Past Tenses", "Future Forms", "Passive Voice", "Conditionals",
                         "Reported Speech", "Modal Verbs", "Reading Strategies", "Use of English"],
 }
+
+
+# Official NMT 2026 conversion tables (Додаток 5 до Порядку прийому 2026).
+# subject: (max test score, threshold, [NMT score for threshold, threshold + 1, ..., max])
+NMT_TABLES_2026 = {
+    "Українська мова": (45, 8, [
+        100, 105, 110, 120, 125, 130, 134, 136, 138, 140, 142, 143, 144, 145, 146, 148, 149, 150, 152,
+        154, 156, 157, 159, 160, 162, 163, 165, 167, 170, 172, 175, 177, 180, 183, 186, 191, 195, 200,
+    ]),
+    "Математика": (32, 5, [
+        100, 108, 115, 123, 131, 134, 137, 140, 143, 145, 147, 148, 149, 150,
+        151, 152, 155, 159, 163, 167, 170, 173, 176, 180, 184, 189, 194, 200,
+    ]),
+    "Історія України": (54, 9, [
+        100, 105, 110, 115, 120, 125, 130, 132, 134, 136, 138, 140, 141, 142, 143, 144, 145, 146, 147,
+        148, 149, 150, 151, 152, 154, 156, 158, 160, 163, 166, 168, 169, 170, 172, 173, 175, 177, 179,
+        181, 183, 185, 188, 191, 194, 197, 200,
+    ]),
+    "Англійська мова": (32, 5, [
+        100, 109, 118, 125, 131, 134, 137, 140, 143, 145, 147, 148, 149, 150,
+        151, 152, 153, 155, 157, 159, 162, 166, 169, 173, 179, 185, 191, 200,
+    ]),
+}
+NMT_TABLES_SOURCE = "https://osvita.ua/doc/files/news/978/97839/d5_1.pdf"
 
 
 def phone():
@@ -97,6 +121,7 @@ class Command(BaseCommand):
         self.year_start = date(year, 9, 1)
 
         self.create_subjects_and_teachers()
+        self.create_conversion_tables()
         self.create_tariffs()
         self.create_groups()
         self.create_students()
@@ -115,7 +140,7 @@ class Command(BaseCommand):
         # Order is important: first records that depend on others (because of PROTECT)
         for model in [Payment, Refund, Invoice, Attendance, TestResult, Test, Lesson,
                       Contract, Salary, Expense, GroupSchedule, StudyGroup, Tariff, Student,
-                      Teacher, Subject]:
+                      Teacher, ConversionRow, ConversionTable, Subject]:
             model.objects.all().delete()
         self.stdout.write("Старі дані видалено.")
 
@@ -133,6 +158,19 @@ class Command(BaseCommand):
             Teacher.objects.create(last_name=ln, first_name=fn, phone=phone(), rate_per_lesson=Decimal(rate))
             for ln, fn, rate in teachers_data
         ]
+
+    def create_conversion_tables(self):
+        """Official tables 2026. Biology has no table on purpose:
+        it shows how the system works when the score is written by hand."""
+        for subject_name, (max_raw, threshold, scaled) in NMT_TABLES_2026.items():
+            table = ConversionTable.objects.create(
+                subject=self.subjects[subject_name], year=2026,
+                max_raw=max_raw, threshold_raw=threshold, source=NMT_TABLES_SOURCE,
+            )
+            ConversionRow.objects.bulk_create(
+                ConversionRow(table=table, raw_score=threshold + i, scaled_score=value)
+                for i, value in enumerate(scaled)
+            )
 
     def create_tariffs(self):
         # Only two tariffs for new contracts.
@@ -296,11 +334,23 @@ class Command(BaseCommand):
         value = 40 + (self.skill[student.id] - 120) * 0.8 + progress + random.randint(-10, 10)
         return max(0, min(100, round(value)))
 
-    def result_score(self, test, student, test_day):
-        """Choose the right scale for the test type."""
-        if test.uses_nmt_scale:
-            return self.score_for(student, test_day)
-        return self.percent_for(student, test_day)
+    def raw_for(self, table, target, fail=False):
+        """The test score that gives the NMT score closest to the target.
+        fail=True: a score below the threshold (the student did not pass)."""
+        if fail:
+            return random.randint(max(0, table.threshold_raw - 4), table.threshold_raw - 1)
+        return min(table.scale, key=lambda raw: abs(table.scale[raw] - target))
+
+    def make_result(self, test, student, test_day, fail=False):
+        """A result with the right scale for the test type.
+        bulk_create() does not call save(), so here we convert the score ourselves."""
+        if not test.uses_nmt_scale:
+            return TestResult(test=test, student=student, score=self.percent_for(student, test_day))
+        table = test.conversion_table
+        if table is None:  # no table for the subject: the score is written by hand
+            return TestResult(test=test, student=student, score=self.score_for(student, test_day))
+        raw = self.raw_for(table, self.score_for(student, test_day), fail=fail)
+        return TestResult(test=test, student=student, raw_score=raw, score=table.convert(raw))
 
     def create_tests(self):
         results = []
@@ -315,9 +365,8 @@ class Command(BaseCommand):
                 test = Test.objects.create(subject=group.subject, group=group,
                                            title=f"{title} ({group.full_name})", kind=kind, held_at=day)
                 for student in self.members_on(group, day):
-                    # Diagnostic -> 100-200, topic test -> percent
-                    results.append(TestResult(test=test, student=student,
-                                              score=self.result_score(test, student, day)))
+                    # Diagnostic -> test score + NMT score, topic test -> percent
+                    results.append(self.make_result(test, student, day))
 
         # School-wide trial NMT in Ukrainian for all groups of the subject (group is empty)
         trial_day = self.year_start + timedelta(days=46)
@@ -325,15 +374,16 @@ class Command(BaseCommand):
             subject = self.subjects["Українська мова"]
             test = Test.objects.create(subject=subject, group=None, title="Пробне НМТ: українська мова",
                                        kind=Test.Kind.TRIAL, held_at=trial_day)
-            seen = set()
+            # All students of the subject on this day (one student can be in two groups)
+            participants = {}
             for group in self.groups:
-                if group.subject_id != subject.id:
-                    continue
-                for student in self.members_on(group, trial_day):
-                    if student.id not in seen:
-                        seen.add(student.id)
-                        results.append(TestResult(test=test, student=student,
-                                                  score=self.score_for(student, trial_day)))
+                if group.subject_id == subject.id:
+                    for student in self.members_on(group, trial_day):
+                        participants[student.id] = student
+            # The weakest participant does not pass the threshold: the pages show this case too
+            weakest_id = min(participants, key=lambda sid: self.skill[sid]) if participants else None
+            for student_id, student in participants.items():
+                results.append(self.make_result(test, student, trial_day, fail=student_id == weakest_id))
         TestResult.objects.bulk_create(results)
 
     def create_invoices_and_payments(self):
@@ -418,7 +468,7 @@ class Command(BaseCommand):
 
     def print_summary(self):
         rows = [
-            ("Предмети", Subject), ("Викладачі", Teacher), ("Тарифи", Tariff), ("Учні", Student),
+            ("Предмети", Subject), ("Таблиці переведення", ConversionTable), ("Викладачі", Teacher), ("Тарифи", Tariff), ("Учні", Student),
             ("Групи", StudyGroup), ("Розклад (занять на тиждень)", GroupSchedule),
             ("Договори", Contract), ("Заняття", Lesson),
             ("Відвідуваність", Attendance), ("Тести", Test), ("Результати тестів", TestResult),

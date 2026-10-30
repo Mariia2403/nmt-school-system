@@ -133,7 +133,7 @@
   <div class="tab-pane fade" id="tab-tests">
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>Дата</th><th>Тест</th><th>Тип</th><th>Предмет</th><th class="text-end">Бал</th></tr></thead>
+        <thead><tr><th>Дата</th><th>Тест</th><th>Тип</th><th>Предмет</th><th class="text-end">Тестовий бал</th><th class="text-end">Бал</th></tr></thead>
         <tbody>
           {% for r in results %}
             <tr>
@@ -141,10 +141,11 @@
               <td>{{ r.test.title }}</td>
               <td>{{ r.test.get_kind_display }}</td>
               <td>{{ r.test.subject }}</td>
-              <td class="text-end fw-semibold">{{ r.score_display }}</td>
+              <td class="text-end text-muted">{{ r.raw_display }}</td>
+              <td class="text-end fw-semibold {% if r.threshold_failed %}text-danger{% endif %}">{{ r.score_display }}</td>
             </tr>
           {% empty %}
-            <tr><td colspan="5" class="text-muted">Результатів тестів немає.</td></tr>
+            <tr><td colspan="6" class="text-muted">Результатів тестів немає.</td></tr>
           {% endfor %}
         </tbody>
       </table>

@@ -115,7 +115,7 @@
             </td>
             <td class="text-end">
               {% if c.last_score %}
-                <strong>{{ c.last_score.score }}</strong>
+                <strong class="{% if c.last_score.threshold_failed %}text-danger{% endif %}">{{ c.last_score.score_display }}</strong>
                 <div class="small text-muted">{{ c.last_score.test.held_at|date:"d.m.Y" }}</div>
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>

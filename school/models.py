@@ -14,6 +14,7 @@ Some fields are calculated automatically if you leave them empty
 (invoice amount, salary, reserve). We use the method _fill_defaults() for this.
 Note: do not name it _prepare() - Django already uses this name inside models.
 """
+import re
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
@@ -370,6 +371,159 @@ class Attendance(models.Model):
                 raise ValidationError({"student": "Цей учень не навчається в групі цього заняття."})
 
 
+# ───────────────────────── NMT conversion tables ─────────────────────────
+
+def parse_conversion_text(text):
+    """Read a pasted table: every line has pairs "test score  NMT score".
+    All of these work:
+        5 100
+        5;100
+        5 → 100
+        8 100   27 154      (two columns copied from a PDF: two pairs in one line)
+    Returns (pairs, errors): pairs = [(5, 100), ...]."""
+    pairs, errors = [], []
+    for number, line in enumerate(text.splitlines(), start=1):
+        values = [int(v) for v in re.findall(r"\d+", line)]
+        if not values:
+            continue  # an empty line or a line with words only (a header)
+        if len(values) % 2:
+            errors.append(f"Рядок {number}: «{line.strip()}» — потрібні пари чисел «тестовий бал — бал 100–200».")
+            continue
+        pairs.extend(zip(values[0::2], values[1::2]))
+    return pairs, errors
+
+
+def check_conversion_rows(threshold_raw, max_raw, pairs):
+    """Check a full table. Returns a list of errors (an empty list = the table is good).
+    Rules: one row for EVERY test score from the threshold to the maximum,
+    NMT scores 100-200, a bigger test score never gives a smaller NMT score."""
+    errors = []
+    scale = {}
+    for raw, scaled in pairs:
+        if raw in scale:
+            errors.append(f"Тестовий бал {raw} записано двічі.")
+        scale[raw] = scaled
+    if threshold_raw is None or max_raw is None:
+        return errors
+    for raw, scaled in sorted(scale.items()):
+        if raw < threshold_raw or raw > max_raw:
+            errors.append(f"Тестовий бал {raw} поза межами {threshold_raw}–{max_raw} (поріг — максимум).")
+        if not 100 <= scaled <= 200:
+            errors.append(f"Для тестового бала {raw}: бал {scaled} має бути від 100 до 200.")
+    missing = [raw for raw in range(threshold_raw, max_raw + 1) if raw not in scale]
+    if missing:
+        shown = ", ".join(str(m) for m in missing[:10]) + (" …" if len(missing) > 10 else "")
+        errors.append(f"Немає рядків для тестових балів: {shown}. Учень з таким балом не отримав би результату.")
+    previous = None
+    for raw in range(threshold_raw, max_raw + 1):
+        if raw in scale:
+            if previous is not None and scale[raw] < previous[1]:
+                errors.append(
+                    f"Більший тестовий бал дає менший результат: {previous[0]} → {previous[1]}, але {raw} → {scale[raw]}."
+                )
+            previous = (raw, scale[raw])
+    return errors
+
+
+class ConversionTable(models.Model):
+    """Official table of the УЦОЯО for one subject and one year:
+    how to change the test score (for example, 17 of 32) into the NMT score 100-200.
+    The table changes every year, so we keep every year as a new record and never change the code."""
+
+    subject = models.ForeignKey(
+        Subject, on_delete=models.PROTECT, related_name="conversion_tables", verbose_name="Предмет"
+    )
+    year = models.PositiveSmallIntegerField("Рік НМТ")
+    max_raw = models.PositiveSmallIntegerField("Максимальний тестовий бал")
+    threshold_raw = models.PositiveSmallIntegerField(
+        "Пороговий тестовий бал", help_text="Найменший тестовий бал, що дає 100. Нижче — «не склав»."
+    )
+    source = models.URLField("Джерело", blank=True, help_text="Посилання на офіційну таблицю (УЦОЯО, МОН)")
+
+    class Meta:
+        db_table = "conversion_tables"
+        verbose_name = "Таблиця переведення балів"
+        verbose_name_plural = "Таблиці переведення балів"
+        ordering = ["subject__name", "-year"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["subject", "year"], name="conversion_tables_one_per_year",
+                violation_error_message="Для цього предмета таблиця за цей рік уже є.",
+            ),
+            models.CheckConstraint(
+                condition=Q(threshold_raw__gte=1, threshold_raw__lte=F("max_raw")),
+                name="conversion_tables_threshold_within_max",
+                violation_error_message="Поріг має бути від 1 до максимального тестового бала.",
+            ),
+            models.CheckConstraint(
+                condition=Q(year__gte=2022, year__lte=2100),
+                name="conversion_tables_year_valid",
+                violation_error_message="Рік має бути від 2022 (перше НМТ).",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.subject} — {self.year} (поріг {self.threshold_raw}, макс. {self.max_raw})"
+
+    @classmethod
+    def for_test(cls, subject_id, day):
+        """The table for a test: the newest year that is not later than the test year.
+        Example: a trial test in November 2026 -> table 2026 (the table 2027 does not exist yet)."""
+        if not subject_id or not day:
+            return None
+        return (
+            cls.objects.filter(subject_id=subject_id, year__lte=day.year)
+            .prefetch_related("rows").order_by("-year").first()
+        )
+
+    @property
+    def scale(self):
+        """{test score: NMT score} — read once, then used from memory."""
+        if not hasattr(self, "_scale"):
+            self._scale = {row.raw_score: row.scaled_score for row in self.rows.all()}
+        return self._scale
+
+    def convert(self, raw):
+        """Test score -> NMT score. None if the threshold is not passed (or there is no row)."""
+        if raw is None or raw < self.threshold_raw:
+            return None
+        return self.scale.get(raw)
+
+    def problems(self):
+        """Errors of the saved table (an empty list = the table is complete)."""
+        return check_conversion_rows(self.threshold_raw, self.max_raw, list(self.scale.items()))
+
+
+class ConversionRow(models.Model):
+    table = models.ForeignKey(
+        ConversionTable, on_delete=models.CASCADE, related_name="rows", verbose_name="Таблиця"
+    )
+    raw_score = models.PositiveSmallIntegerField("Тестовий бал")
+    scaled_score = models.PositiveSmallIntegerField("Бал 100–200")
+
+    class Meta:
+        db_table = "conversion_rows"
+        verbose_name = "Рядок таблиці переведення"
+        verbose_name_plural = "Рядки таблиці переведення"
+        ordering = ["table", "raw_score"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["table", "raw_score"], name="conversion_rows_one_per_raw",
+                violation_error_message="Цей тестовий бал уже є в таблиці.",
+            ),
+            models.CheckConstraint(
+                condition=Q(scaled_score__gte=100, scaled_score__lte=200),
+                name="conversion_rows_scaled_100_200",
+                violation_error_message="Бал має бути від 100 до 200.",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.raw_score} → {self.scaled_score}"
+
+
+# ───────────────────────── Tests ─────────────────────────
+
 class Test(models.Model):
     class Kind(models.TextChoices):
         DIAGNOSTIC = "diagnostic", "Діагностичний (вхідний)"
@@ -406,6 +560,18 @@ class Test(models.Model):
     def uses_nmt_scale(self):
         return self.kind in self.NMT_SCALE_KINDS
 
+    @property
+    def conversion_table(self):
+        """The conversion table for this test (None for topic tests or if there is no table).
+        We keep it in memory, so a test with 30 results reads the table only once."""
+        if not self.uses_nmt_scale:
+            return None
+        key = (self.subject_id, self.held_at.year if self.held_at else None)
+        if getattr(self, "_table_key", None) != key:
+            self._table_key = key
+            self._table = ConversionTable.for_test(self.subject_id, self.held_at)
+        return self._table
+
     def score_range(self):
         """Allowed score for this test: (min, max)."""
         return (100, 200) if self.uses_nmt_scale else (0, 100)
@@ -422,12 +588,31 @@ class Test(models.Model):
         # the old scores can be wrong for the new scale (for example, 70% -> "70 NMT points").
         if self.pk:
             low, high = self.score_range()
-            wrong = self.results.exclude(score__gte=low, score__lte=high).count()
+            results = self.results.all()
+            wrong = results.filter(score__isnull=False).exclude(score__gte=low, score__lte=high).count()
+            if not self.uses_nmt_scale:
+                # A topic test needs a percent for every student
+                wrong += results.filter(score__isnull=True).count()
             if wrong:
                 raise ValidationError({
                     "kind": f"Для цього типу бал має бути {self.scale_label()}, "
                             f"але {wrong} результат(ів) не підходять. Спершу виправте бали."
                 })
+
+    def recalculate_results(self):
+        """Convert the test scores of all results again (for example, after a fix in the table).
+        Returns how many results changed."""
+        table = self.conversion_table
+        if table is None:
+            return 0
+        changed = 0
+        for result in self.results.filter(raw_score__isnull=False):
+            new_score = table.convert(result.raw_score)
+            if new_score != result.score:
+                result.score = new_score
+                result.save(update_fields=["score"])
+                changed += 1
+        return changed
 
 
 class TestResult(models.Model):
@@ -437,11 +622,17 @@ class TestResult(models.Model):
     student = models.ForeignKey(
         Student, on_delete=models.CASCADE, related_name="test_results", verbose_name="Учень"
     )
-    # The database allows 0-200 for all tests.
-    # The exact scale depends on the test type and is checked in clean():
-    # topic test -> 0-100 (%), diagnostic / trial NMT / final -> 100-200.
+    # Test score = points for correct answers (for example, 17 of 32).
+    # For NMT tests the teacher writes only this number, the system finds the score 100-200.
+    raw_score = models.PositiveSmallIntegerField(
+        "Тестовий бал", null=True, blank=True,
+        help_text="Для НМТ-тестів: кількість тестових балів (наприклад, 17 з 32).",
+    )
+    # NMT tests: calculated from raw_score (empty = the threshold is not passed).
+    # Topic tests: percent 0-100, written by the teacher.
     score = models.IntegerField(
-        "Бал", validators=[MinValueValidator(0), MaxValueValidator(200)]
+        "Бал", null=True, blank=True, validators=[MinValueValidator(0), MaxValueValidator(200)],
+        help_text="Для НМТ-тестів рахується автоматично з тестового бала. Для тематичних — відсоток.",
     )
 
     class Meta:
@@ -456,16 +647,36 @@ class TestResult(models.Model):
                 name="test_results_score_0_200",
                 violation_error_message="Бал має бути від 0 до 200.",
             ),
+            # An empty result makes no sense: we need a score or at least a test score
+            models.CheckConstraint(
+                condition=Q(score__isnull=False) | Q(raw_score__isnull=False),
+                name="test_results_has_some_score",
+                violation_error_message="Вкажіть бал або тестовий бал.",
+            ),
         ]
 
     def __str__(self):
         return f"{self.student} — {self.test.title}: {self.score_display()}"
 
+    @property
+    def threshold_failed(self):
+        """True if the student did not pass the threshold of an NMT test."""
+        return self.test.uses_nmt_scale and self.score is None and self.raw_score is not None
+
     def score_display(self):
         """Score with its unit: "70%" for topic tests, "165" for the NMT scale."""
+        if self.threshold_failed:
+            return "поріг не подолано"
         if self.score is None:
             return "—"
         return str(self.score) if self.test.uses_nmt_scale else f"{self.score}%"
+
+    def raw_display(self):
+        """Test score with the maximum: "17 з 32" (or "17" if there is no table)."""
+        if self.raw_score is None:
+            return "—"
+        table = self.test.conversion_table
+        return f"{self.raw_score} з {table.max_raw}" if table else str(self.raw_score)
 
     def _get_test(self):
         # When you add a new test with results on one admin page,
@@ -476,19 +687,47 @@ class TestResult(models.Model):
         except Test.DoesNotExist:
             return None
 
+    def _fill_defaults(self):
+        test = self._get_test()
+        # NMT test with a table: the score 100-200 always comes from the table
+        if test is not None and self.raw_score is not None and test.conversion_table is not None:
+            self.score = test.conversion_table.convert(self.raw_score)
+
     def clean(self):
         test = self._get_test()
         if test is None:
             return
+        table = test.conversion_table
 
-        # 1. The score must fit the scale of this test type
+        if not test.uses_nmt_scale:
+            # Topic test: only percent
+            if self.raw_score is not None:
+                raise ValidationError({"raw_score": "Для тематичного тесту тестовий бал не потрібен — вкажіть відсоток."})
+            if self.score is None:
+                raise ValidationError({"score": "Вкажіть результат у відсотках (0–100)."})
+        elif table is not None:
+            # NMT test with a table: the test score is required, the score is calculated
+            if self.raw_score is None:
+                raise ValidationError({"raw_score": f"Вкажіть тестовий бал (0–{table.max_raw}): бал 100–200 порахується сам."})
+            if self.raw_score > table.max_raw:
+                raise ValidationError({"raw_score": f"Максимум для цього предмета — {table.max_raw} тестових балів."})
+            self._fill_defaults()
+        else:
+            # NMT test, but there is no table for this subject: the score is written by hand
+            if self.score is None:
+                raise ValidationError({
+                    "score": "Для цього предмета немає таблиці переведення: вкажіть бал 100–200 вручну "
+                             "(або додайте таблицю в розділі «Таблиці переведення балів»)."
+                })
+
+        # The score must fit the scale of this test type
         low, high = test.score_range()
         if self.score is not None and not (low <= self.score <= high):
             raise ValidationError({
                 "score": f"Для тесту типу «{test.get_kind_display()}» бал має бути {test.scale_label()}."
             })
 
-        # 2. The student must study in the group (or the subject) of this test
+        # The student must study in the group (or the subject) of this test
         if not self.student_id:
             return
         contracts = Contract.objects.filter(student_id=self.student_id)
@@ -500,6 +739,10 @@ class TestResult(models.Model):
             ok = contracts.filter(group__subject_id=test.subject_id).exists()
         if not ok:
             raise ValidationError({"student": "Цей учень не навчається в групі (або на предметі) цього тесту."})
+
+    def save(self, *args, **kwargs):
+        self._fill_defaults()  # also works when results are created in code
+        super().save(*args, **kwargs)
 
 
 # ───────────────────────── Contracts and finance ─────────────────────────

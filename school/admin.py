@@ -9,13 +9,17 @@ For every model we set:
 """
 from decimal import Decimal
 
+from django import forms
 from django.contrib import admin
+from django.core.exceptions import ValidationError
+from django.forms.models import BaseInlineFormSet
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
 from .models import (
-    Attendance, Contract, Expense, GroupSchedule, Invoice, Lesson, Payment, Refund, Salary,
-    Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
+    Attendance, Contract, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
+    Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
+    check_conversion_rows, parse_conversion_text,
 )
 
 # Titles of the admin site
@@ -77,7 +81,9 @@ class AttendanceInline(admin.TabularInline):
 class TestResultInline(admin.TabularInline):
     model = TestResult
     extra = 0
-    fields = ["student", "score"]
+    # NMT tests: write the test score, the score 100-200 is calculated.
+    # Topic tests: write only the percent in "Бал".
+    fields = ["student", "raw_score", "score"]
 
     def get_formset(self, request, obj=None, **kwargs):
         request._current_test = obj
@@ -262,12 +268,27 @@ class AttendanceAdmin(admin.ModelAdmin):
 
 @admin.register(Test)
 class TestAdmin(admin.ModelAdmin):
-    list_display = ["title", "subject", "group", "kind", "held_at", "results_count"]
+    list_display = ["title", "subject", "group", "kind", "held_at", "table_used", "results_count"]
     list_filter = ["kind", "subject", "group"]
     search_fields = ["title"]
     date_hierarchy = "held_at"
     autocomplete_fields = ["subject", "group"]
     inlines = [TestResultInline]
+    actions = ["recalculate_scores"]
+
+    @admin.display(description="Таблиця переведення")
+    def table_used(self, obj):
+        if not obj.uses_nmt_scale:
+            return "— (відсотки)"
+        table = obj.conversion_table
+        return f"{table.year} р." if table else "немає (бал вручну)"
+
+    @admin.action(description="Перерахувати бали 100–200 за таблицею переведення")
+    def recalculate_scores(self, request, queryset):
+        # Scores are a "snapshot": if somebody fixes a row in the table later,
+        # old results do not change by themselves. This action updates them.
+        changed = sum(test.recalculate_results() for test in queryset.select_related("subject"))
+        self.message_user(request, f"Змінено результатів: {changed}")
 
     def get_queryset(self, request):
         return (
@@ -283,13 +304,111 @@ class TestAdmin(admin.ModelAdmin):
 
 @admin.register(TestResult)
 class TestResultAdmin(admin.ModelAdmin):
-    list_display = ["test", "student", "score"]
+    list_display = ["test", "student", "raw_score", "result"]
     list_filter = ["test__kind", "test__subject"]
     search_fields = ["student__last_name", "student__first_name", "test__title"]
     autocomplete_fields = ["test", "student"]
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("test", "student")
+
+    @admin.display(description="Бал", ordering="score")
+    def result(self, obj):
+        return obj.score_display()
+
+
+# ───────────────────────── NMT conversion tables ─────────────────────────
+
+class ConversionRowFormSet(BaseInlineFormSet):
+    """Checks the WHOLE table, not only one row: every test score from the threshold
+    to the maximum must have a row, and the scores must not go down."""
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return  # first the user must fix errors in single rows
+        # If the table was pasted as text, the rows below will be replaced:
+        # the text is checked in ConversionTableForm, so here we do nothing
+        if self.data.get("rows_text", "").strip():
+            return
+        pairs = [
+            (form.cleaned_data["raw_score"], form.cleaned_data["scaled_score"])
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+        errors = check_conversion_rows(self.instance.threshold_raw, self.instance.max_raw, pairs)
+        if errors:
+            raise ValidationError(errors)
+
+
+class ConversionRowInline(admin.TabularInline):
+    model = ConversionRow
+    formset = ConversionRowFormSet
+    extra = 0
+    fields = ["raw_score", "scaled_score"]
+
+
+class ConversionTableForm(forms.ModelForm):
+    # Not a database field: a text box to paste the whole table at once
+    rows_text = forms.CharField(
+        label="Вставити таблицю текстом", required=False,
+        widget=forms.Textarea(attrs={"rows": 12, "cols": 40, "placeholder": "5 100\n6 108\n7 115\n…\n32 200"}),
+        help_text="Кожен рядок — «тестовий бал  бал 100–200». Можна вставити й два стовпці з PDF "
+                  "(«8 100   27 154»). Якщо поле заповнене, воно ЗАМІНИТЬ усі рядки таблиці нижче.",
+    )
+
+    class Meta:
+        model = ConversionTable
+        fields = ["subject", "year", "max_raw", "threshold_raw", "source"]
+
+    def clean(self):
+        cleaned = super().clean()
+        text = cleaned.get("rows_text", "").strip()
+        if not text:
+            return cleaned
+        pairs, errors = parse_conversion_text(text)
+        if not errors:
+            errors = check_conversion_rows(cleaned.get("threshold_raw"), cleaned.get("max_raw"), pairs)
+        if errors:
+            raise ValidationError({"rows_text": errors})
+        # Remember the rows: they are saved after the table (in save_related)
+        self.instance._pasted_rows = pairs
+        return cleaned
+
+
+@admin.register(ConversionTable)
+class ConversionTableAdmin(admin.ModelAdmin):
+    form = ConversionTableForm
+    list_display = ["subject", "year", "threshold_raw", "max_raw", "rows_count", "is_complete", "source"]
+    list_filter = ["subject", "year"]
+    autocomplete_fields = ["subject"]
+    inlines = [ConversionRowInline]
+    fieldsets = [
+        (None, {"fields": ["subject", "year", "max_raw", "threshold_raw", "source"]}),
+        ("Швидке введення", {"fields": ["rows_text"]}),
+    ]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("subject").prefetch_related("rows")
+
+    @admin.display(description="Рядків")
+    def rows_count(self, obj):
+        return len(obj.scale)
+
+    @admin.display(description="Повна", boolean=True)
+    def is_complete(self, obj):
+        return not obj.problems()
+
+    def save_related(self, request, form, formsets, change):
+        super().save_related(request, form, formsets, change)
+        pairs = getattr(form.instance, "_pasted_rows", None)
+        if pairs:
+            # Replace all rows with the pasted table
+            form.instance.rows.all().delete()
+            ConversionRow.objects.bulk_create(
+                ConversionRow(table=form.instance, raw_score=raw, scaled_score=scaled) for raw, scaled in pairs
+            )
+            self.message_user(request, f"Таблицю замінено: {len(pairs)} рядків.")
 
 
 # ───────────────────────── Contracts and finance ─────────────────────────
