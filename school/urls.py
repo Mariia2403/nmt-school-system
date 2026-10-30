@@ -15,4 +15,6 @@ urlpatterns = [
     path("students/<int:pk>/", views.student_detail, name="student_detail"),
     # Students with an overdue debt: the administrator calls their parents
     path("debts/call-list/", views.call_list, name="call_list"),
+    # Money of the school. The month is in the address: /finance/?month=2026-10
+    path("finance/", views.finance, name="finance"),
 ]

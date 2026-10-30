@@ -2,7 +2,7 @@
 Views (page logic) of the school website.
 Every page is only for logged-in users (@login_required).
 """
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -14,7 +14,8 @@ from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 
 from .models import (
-    Attendance, Contract, Expense, Invoice, Lesson, Payment, Student, StudyGroup, Test,
+    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Test,
+    months_between, next_month,
 )
 
 ZERO = Value(Decimal("0"))
@@ -293,3 +294,152 @@ def call_list(request):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
     }
     return render(request, "school/call_list.html", context)
+
+
+# ───────────────────────── Finance ─────────────────────────
+
+def money_sum(queryset, field):
+    """Sum of one money field in SQL (0 if there are no rows)."""
+    return queryset.aggregate(s=Coalesce(Sum(field), ZERO, output_field=MONEY_FIELD))["s"]
+
+
+def parse_month(value, today):
+    """"2026-10" from the address -> date(2026, 10, 1). A wrong value -> the current month."""
+    try:
+        year, month = (int(part) for part in value.split("-"))
+        return date(year, month, 1)
+    except (AttributeError, ValueError):
+        return today.replace(day=1)
+
+
+def school_year_months(month):
+    """Months of the school year (September - May) that contains this month."""
+    year = month.year if month.month >= 9 else month.year - 1
+    return months_between(date(year, 9, 1), date(year + 1, 5, 1))
+
+
+def month_summary(month):
+    """All money numbers of one month. The same function is used for the cards and for the year table,
+    so the numbers on the page are always the same.
+
+    plan      = invoices with the due date in this month (what we expect to get);
+    collected = how much was paid for THESE invoices (on any day);
+    income    = all money that came in this month (also late payments for old months);
+    profit    = income - expenses - salaries - refunds."""
+    end = next_month(month)
+
+    plan_invoices = Invoice.objects.filter(due_date__gte=month, due_date__lt=end)
+    plan = money_sum(plan_invoices, "amount")
+    collected = money_sum(Payment.objects.filter(invoice__in=plan_invoices), "amount")
+
+    payments = Payment.objects.filter(paid_at__date__gte=month, paid_at__date__lt=end)
+    income = money_sum(payments, "amount")
+    reserve = money_sum(payments, "reserve_amount")
+
+    expenses = money_sum(Expense.objects.filter(spent_at__gte=month, spent_at__lt=end), "amount")
+    # Salary is a cost of the month when the lessons were held (it is paid later)
+    month_salaries = Salary.objects.filter(period_month=month)
+    salaries = money_sum(month_salaries, "base_amount") + money_sum(month_salaries, "bonus")
+    refunds = money_sum(
+        Refund.objects.filter(status=Refund.Status.PAID, paid_at__gte=month, paid_at__lt=end), "amount"
+    )
+
+    return {
+        "month": month,
+        "plan": plan,
+        "collected": collected,
+        # None if there is no plan: we cannot divide by 0
+        "collected_pct": round(collected * 100 / plan) if plan else None,
+        "income": income,
+        "reserve": reserve,
+        "expenses": expenses,
+        "salaries": salaries,
+        "refunds": refunds,
+        "costs": expenses + salaries + refunds,
+        "profit": income - expenses - salaries - refunds,
+    }
+
+
+@login_required
+def finance(request):
+    today = timezone.localdate()
+    month = parse_month(request.GET.get("month"), today)
+    end = next_month(month)
+    summary = month_summary(month)
+
+    # Invoices of the month with their state
+    invoices = list(
+        invoices_with_paid()
+        .filter(due_date__gte=month, due_date__lt=end)
+        .select_related("contract__tariff")
+        .order_by("due_date", "contract__student__last_name")
+    )
+    for inv in invoices:
+        inv.debt_value = max(inv.amount - inv.paid_sum, Decimal("0"))
+        if inv.debt_value == 0:
+            inv.state, inv.state_color = "Сплачено", "success"
+        elif inv.due_date > today:
+            inv.state, inv.state_color = "Очікується", "secondary"
+        elif is_overdue(inv, today):
+            inv.state, inv.state_color = "Прострочено", "danger"
+        elif inv.paid_sum > 0:
+            inv.state, inv.state_color = "Частково", "warning"
+        else:
+            inv.state, inv.state_color = "Не сплачено", "warning"
+
+    payments = (
+        Payment.objects.filter(paid_at__date__gte=month, paid_at__date__lt=end)
+        .select_related("invoice__contract__student", "invoice__contract__group__subject")
+        .order_by("-paid_at")
+    )
+    expenses = Expense.objects.filter(spent_at__gte=month, spent_at__lt=end).order_by("-spent_at")
+    # Expenses by category: [("Оренда", 18000), ...], the biggest first
+    labels = dict(Expense.Category.choices)
+    expenses_by_category = [
+        (labels.get(row["category"], row["category"]), row["total"])
+        for row in expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
+    ]
+    salaries = Salary.objects.filter(period_month=month).select_related("teacher").order_by("teacher__last_name")
+    refunds = (
+        Refund.objects
+        .filter(Q(created_at__gte=month, created_at__lt=end) | Q(paid_at__gte=month, paid_at__lt=end))
+        .select_related("contract__student")
+        .order_by("-created_at")
+    )
+
+    # Debtors: always "now", not for the chosen month
+    debtors = debtors_to_call(today)
+
+    # Table for the whole school year. Months in the future have only a plan.
+    current_month = today.replace(day=1)
+    year_rows = [month_summary(m) for m in school_year_months(month)]
+    for row in year_rows:
+        row["is_future"] = row["month"] > current_month
+    past_rows = [row for row in year_rows if not row["is_future"]]
+    year_total = {
+        key: sum((row[key] for row in past_rows), Decimal("0"))
+        for key in ["plan", "income", "expenses", "salaries", "refunds", "profit"]
+    }
+
+    previous = (month - timedelta(days=1)).replace(day=1)
+    context = {
+        "today": today,
+        "month": month,
+        "is_current_month": month == current_month,
+        "previous_month": previous.strftime("%Y-%m"),
+        "next_month": end.strftime("%Y-%m"),
+        "s": summary,
+        "invoices": invoices,
+        "payments": payments,
+        "expenses": expenses,
+        "expenses_by_category": expenses_by_category,
+        "salaries": salaries,
+        "refunds": refunds,
+        "debtors": debtors[:10],
+        "debtors_count": len(debtors),
+        "debtors_total": sum((d["debt"] for d in debtors), Decimal("0")),
+        "overdue_days": settings.DEBT_OVERDUE_DAYS,
+        "year_rows": year_rows,
+        "year_total": year_total,
+    }
+    return render(request, "school/finance.html", context)

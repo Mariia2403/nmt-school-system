@@ -44,7 +44,10 @@
         <!-- These pages will be added in the next steps -->
         <li class="nav-item"><a class="nav-link disabled" href="#"><i class="bi bi-collection"></i> Групи</a></li>
         <li class="nav-item"><a class="nav-link disabled" href="#"><i class="bi bi-journal-check"></i> Журнал</a></li>
-        <li class="nav-item"><a class="nav-link disabled" href="#"><i class="bi bi-cash-coin"></i> Фінанси</a></li>
+        <li class="nav-item">
+          <a class="nav-link {% if url_name == 'finance' %}active{% endif %}"
+             href="{% url 'school:finance' %}"><i class="bi bi-cash-coin"></i> Фінанси</a>
+        </li>
       </ul>
       <ul class="navbar-nav align-items-lg-center">
         {% if user.is_staff %}

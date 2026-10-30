@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+
+{% block title %}Фінанси — Школа НМТ{% endblock %}
+
+{% block content %}
+<!-- Title and month switcher -->
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0"><i class="bi bi-cash-coin"></i> Фінанси</h1>
+  <div class="d-flex align-items-center gap-2">
+    <a href="?month={{ previous_month }}" class="btn btn-outline-secondary btn-sm" title="Попередній місяць">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+    <!-- type="month" shows a month picker; the form sends ?month=2026-10 -->
+    <form method="get" class="d-flex gap-2">
+      <input type="month" name="month" value="{{ month|date:'Y-m' }}" class="form-control form-control-sm"
+             onchange="this.form.submit()">
+    </form>
+    <a href="?month={{ next_month }}" class="btn btn-outline-secondary btn-sm" title="Наступний місяць">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+    {% if not is_current_month %}
+      <a href="{% url 'school:finance' %}" class="btn btn-link btn-sm">Поточний місяць</a>
+    {% endif %}
+  </div>
+</div>
+
+<h2 class="h5 text-muted mb-3">{{ month|date:"F Y" }}</h2>
+
+<!-- Plan and fact -->
+<div class="row g-3 mb-3">
+  <div class="col-md-6 col-lg-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-calendar-check"></i> План надходжень</div>
+        <div class="display-6">{{ s.plan|floatformat:"0g" }} ₴</div>
+        <div class="small text-muted">рахунки з терміном оплати в цьому місяці: {{ invoices|length }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6 col-lg-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-check2-circle"></i> Зібрано за планом</div>
+        <div class="display-6">{{ s.collected|floatformat:"0g" }} ₴</div>
+        {% if s.collected_pct is not None %}
+          <!-- If somebody overpaid, the bar is just full (a width over 100% is cut) -->
+          <div class="progress mt-2" style="height: 6px;">
+            <div class="progress-bar {% if s.collected_pct >= 90 %}bg-success{% elif s.collected_pct >= 60 %}bg-warning{% else %}bg-danger{% endif %}"
+                 style="width: {{ s.collected_pct }}%"></div>
+          </div>
+          <div class="small text-muted mt-1">{{ s.collected_pct }}% плану</div>
+        {% else %}
+          <div class="small text-muted">у цьому місяці рахунків немає</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-md-12 col-lg-4">
+    <div class="card stat-card shadow-sm h-100 border-success">
+      <div class="card-body">
+        <div class="text-muted small"><i class="bi bi-cash-stack"></i> Надійшло за місяць (факт)</div>
+        <div class="display-6 text-success">{{ s.income|floatformat:"0g" }} ₴</div>
+        <div class="small text-muted">
+          усі оплати цього місяця, зокрема борги за минулі місяці;
+          з них у резерв під гарантію: {{ s.reserve|floatformat:"0g" }} ₴
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Profit of the month -->
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <div class="row g-3 align-items-center text-center text-md-start">
+      <div class="col-6 col-md">
+        <div class="small text-muted">Надійшло</div>
+        <div class="h5 mb-0 text-success">{{ s.income|floatformat:"0g" }} ₴</div>
+      </div>
+      <div class="col-6 col-md">
+        <div class="small text-muted">− Витрати</div>
+        <div class="h5 mb-0">{{ s.expenses|floatformat:"0g" }} ₴</div>
+      </div>
+      <div class="col-6 col-md">
+        <div class="small text-muted">− Зарплати</div>
+        <div class="h5 mb-0">{{ s.salaries|floatformat:"0g" }} ₴</div>
+      </div>
+      <div class="col-6 col-md">
+        <div class="small text-muted">− Повернення</div>
+        <div class="h5 mb-0">{{ s.refunds|floatformat:"0g" }} ₴</div>
+      </div>
+      <div class="col-12 col-md">
+        <div class="small text-muted">= Прибуток місяця</div>
+        <div class="h4 mb-0 fw-bold {% if s.profit < 0 %}text-danger{% else %}text-success{% endif %}">
+          {{ s.profit|floatformat:"0g" }} ₴
+        </div>
+      </div>
+    </div>
+    {% if is_current_month %}
+      <div class="small text-muted mt-2">Місяць ще триває: цифри зміняться до його кінця.</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Details -->
+<ul class="nav nav-tabs" role="tablist">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-invoices" type="button">Рахунки <span class="badge text-bg-light border">{{ invoices|length }}</span></button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-payments" type="button">Оплати <span class="badge text-bg-light border">{{ payments|length }}</span></button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-debtors" type="button">Боржники <span class="badge text-bg-danger">{{ debtors_count }}</span></button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-expenses" type="button">Витрати</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-salaries" type="button">Зарплати</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-refunds" type="button">Повернення</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-year" type="button">Навчальний рік</button></li>
+</ul>
+
+<div class="tab-content card card-body shadow-sm border-top-0 rounded-top-0">
+
+  <!-- Invoices -->
+  <div class="tab-pane fade show active" id="tab-invoices">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Учень</th><th>Група</th><th>Оплата</th><th>Сплатити до</th><th class="text-end">Сума</th><th class="text-end">Сплачено</th><th class="text-end">Борг</th><th>Стан</th></tr></thead>
+        <tbody>
+          {% for inv in invoices %}
+            <tr>
+              <td><a href="{% url 'school:student_detail' inv.contract.student.pk %}" class="text-decoration-none">{{ inv.contract.student }}</a></td>
+              <td>{{ inv.contract.group.full_name }}</td>
+              <td class="small">{% if inv.contract.payment_plan == "prepaid" %}весь курс{% else %}{{ inv.period_month|date:"F"|lower }}{% endif %}</td>
+              <td class="text-nowrap">{{ inv.due_date|date:"d.m.Y" }}</td>
+              <td class="text-end text-nowrap">{{ inv.amount|floatformat:"0g" }} ₴</td>
+              <td class="text-end text-nowrap">{{ inv.paid_sum|floatformat:"0g" }} ₴</td>
+              <td class="text-end text-nowrap {% if inv.debt_value %}fw-semibold{% endif %}">
+                {% if inv.debt_value %}{{ inv.debt_value|floatformat:"0g" }} ₴{% else %}—{% endif %}
+              </td>
+              <td><span class="badge text-bg-{{ inv.state_color }}">{{ inv.state }}</span></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="8" class="text-muted">У цьому місяці рахунків немає.</td></tr>
+          {% endfor %}
+        </tbody>
+        {% if invoices %}
+          <tfoot class="table-light fw-semibold">
+            <tr><td colspan="4">Разом</td><td class="text-end">{{ s.plan|floatformat:"0g" }} ₴</td><td class="text-end">{{ s.collected|floatformat:"0g" }} ₴</td><td colspan="2"></td></tr>
+          </tfoot>
+        {% endif %}
+      </table>
+    </div>
+  </div>
+
+  <!-- Payments -->
+  <div class="tab-pane fade" id="tab-payments">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Дата</th><th>Учень</th><th>Група</th><th>За місяць</th><th>Спосіб</th><th class="text-end">Сума</th><th class="text-end">У резерв</th></tr></thead>
+        <tbody>
+          {% for p in payments %}
+            <tr>
+              <td class="text-nowrap">{{ p.paid_at|date:"d.m.Y H:i" }}</td>
+              <td>{{ p.invoice.contract.student }}</td>
+              <td>{{ p.invoice.contract.group.full_name }}</td>
+              <td class="small">
+                {% if p.invoice.contract.payment_plan == "prepaid" %}весь курс{% else %}{{ p.invoice.period_month|date:"m.Y" }}{% endif %}
+                {% if p.invoice.period_month < month %}<span class="badge text-bg-warning">борг</span>{% endif %}
+              </td>
+              <td>{{ p.get_method_display }}</td>
+              <td class="text-end text-nowrap">{{ p.amount|floatformat:"0g" }} ₴</td>
+              <td class="text-end text-nowrap text-muted">{% if p.reserve_amount %}{{ p.reserve_amount|floatformat:"0g" }} ₴{% else %}—{% endif %}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="text-muted">У цьому місяці оплат немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if user.is_staff %}
+      <a href="{% url 'admin:school_payment_add' %}" class="btn btn-outline-primary btn-sm mt-2"><i class="bi bi-plus-lg"></i> Внести оплату</a>
+    {% endif %}
+  </div>
+
+  <!-- Debtors (always for today) -->
+  <div class="tab-pane fade" id="tab-debtors">
+    <p class="small text-muted">
+      Станом на {{ today|date:"d.m.Y" }}, незалежно від обраного місяця. Прострочено понад {{ overdue_days }} дн.
+      Разом: <strong class="text-danger">{{ debtors_total|floatformat:"0g" }} ₴</strong>.
+    </p>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Учень</th><th>Телефон батьків</th><th class="text-end">Борг</th><th class="text-end">Прострочено</th></tr></thead>
+        <tbody>
+          {% for d in debtors %}
+            <tr>
+              <td><a href="{% url 'school:student_detail' d.student.pk %}" class="text-decoration-none">{{ d.student }}</a></td>
+              <td class="text-nowrap">{{ d.student.parent_phone|default:"—" }}</td>
+              <td class="text-end text-danger fw-semibold text-nowrap">{{ d.debt|floatformat:"0g" }} ₴</td>
+              <td class="text-end"><span class="badge text-bg-danger">{{ d.days_overdue }} дн.</span></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-muted">Прострочених боргів немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if debtors_count %}
+      <a href="{% url 'school:call_list' %}" class="btn btn-outline-danger btn-sm mt-2">
+        <i class="bi bi-telephone-outbound"></i> Повний список до дзвінка ({{ debtors_count }})
+      </a>
+    {% endif %}
+  </div>
+
+  <!-- Expenses -->
+  <div class="tab-pane fade" id="tab-expenses">
+    <div class="row g-4">
+      <div class="col-lg-4">
+        <h3 class="h6">За категоріями</h3>
+        <ul class="list-group list-group-flush">
+          {% for name, total in expenses_by_category %}
+            <li class="list-group-item d-flex justify-content-between px-0">
+              <span>{{ name }}</span><span class="fw-semibold text-nowrap">{{ total|floatformat:"0g" }} ₴</span>
+            </li>
+          {% empty %}
+            <li class="list-group-item text-muted px-0">Витрат немає.</li>
+          {% endfor %}
+          {% if expenses_by_category %}
+            <li class="list-group-item d-flex justify-content-between px-0 fw-bold">
+              <span>Разом</span><span class="text-nowrap">{{ s.expenses|floatformat:"0g" }} ₴</span>
+            </li>
+          {% endif %}
+        </ul>
+      </div>
+      <div class="col-lg-8">
+        <h3 class="h6">Усі витрати</h3>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead><tr><th>Дата</th><th>Категорія</th><th>Коментар</th><th class="text-end">Сума</th></tr></thead>
+            <tbody>
+              {% for e in expenses %}
+                <tr>
+                  <td class="text-nowrap">{{ e.spent_at|date:"d.m.Y" }}</td>
+                  <td>{{ e.get_category_display }}</td>
+                  <td class="small text-muted">{{ e.comment|default:"—" }}</td>
+                  <td class="text-end text-nowrap">{{ e.amount|floatformat:"0g" }} ₴</td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="4" class="text-muted">Витрат немає.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if user.is_staff %}
+          <a href="{% url 'admin:school_expense_add' %}" class="btn btn-outline-primary btn-sm mt-2"><i class="bi bi-plus-lg"></i> Додати витрату</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Salaries -->
+  <div class="tab-pane fade" id="tab-salaries">
+    <p class="small text-muted">Зарплата за заняття, проведені в цьому місяці (виплачується на початку наступного).</p>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Викладач</th><th class="text-end">Занять</th><th class="text-end">Ставка</th><th class="text-end">База</th><th class="text-end">Премія</th><th class="text-end">Разом</th><th>Виплачено</th></tr></thead>
+        <tbody>
+          {% for sal in salaries %}
+            <tr>
+              <td>{{ sal.teacher }}</td>
+              <td class="text-end">{{ sal.lessons_count }}</td>
+              <td class="text-end text-nowrap">{{ sal.teacher.rate_per_lesson|floatformat:"0g" }} ₴</td>
+              <td class="text-end text-nowrap">{{ sal.base_amount|floatformat:"0g" }} ₴</td>
+              <td class="text-end text-nowrap">{% if sal.bonus %}{{ sal.bonus|floatformat:"0g" }} ₴{% else %}—{% endif %}</td>
+              <td class="text-end text-nowrap fw-semibold">{{ sal.total|floatformat:"0g" }} ₴</td>
+              <td>
+                {% if sal.paid_at %}<span class="badge text-bg-success">{{ sal.paid_at|date:"d.m.Y" }}</span>
+                {% else %}<span class="badge text-bg-secondary">ще ні</span>{% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7" class="text-muted">Зарплат за цей місяць ще немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Refunds -->
+  <div class="tab-pane fade" id="tab-refunds">
+    <p class="small text-muted">Заявки, створені або виплачені в цьому місяці. У прибуток іде лише статус «Виплачено».</p>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Заявка</th><th>Учень</th><th>Причина</th><th class="text-end">Сума</th><th>Статус</th><th>Виплачено</th></tr></thead>
+        <tbody>
+          {% for r in refunds %}
+            <tr>
+              <td class="text-nowrap">{{ r.created_at|date:"d.m.Y" }}</td>
+              <td>{{ r.contract.student }}</td>
+              <td class="small">{{ r.get_reason_display }}</td>
+              <td class="text-end text-nowrap">{{ r.amount|floatformat:"0g" }} ₴</td>
+              <td><span class="badge text-bg-{% if r.status == 'paid' %}success{% elif r.status == 'rejected' %}secondary{% else %}warning{% endif %}">{{ r.get_status_display }}</span></td>
+              <td class="text-nowrap">{{ r.paid_at|date:"d.m.Y"|default:"—" }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6" class="text-muted">Повернень немає.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- School year -->
+  <div class="tab-pane fade" id="tab-year">
+    <p class="small text-muted">Клікніть на місяць, щоб відкрити його. Майбутні місяці — лише план.</p>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0">
+        <thead>
+          <tr><th>Місяць</th><th class="text-end">План</th><th class="text-end">Зібрано</th><th class="text-end">Надійшло</th><th class="text-end">Витрати</th><th class="text-end">Зарплати</th><th class="text-end">Повернення</th><th class="text-end">Прибуток</th></tr>
+        </thead>
+        <tbody>
+          {% for row in year_rows %}
+            <tr class="{% if row.month == month %}table-primary{% elif row.is_future %}text-muted{% endif %}">
+              <td><a href="?month={{ row.month|date:'Y-m' }}" class="text-decoration-none">{{ row.month|date:"F Y" }}</a></td>
+              <td class="text-end text-nowrap">{{ row.plan|floatformat:"0g" }}</td>
+              <td class="text-end text-nowrap">
+                {% if row.is_future %}—{% else %}{{ row.collected|floatformat:"0g" }}{% if row.collected_pct is not None %} <span class="small text-muted">({{ row.collected_pct }}%)</span>{% endif %}{% endif %}
+              </td>
+              {% if row.is_future %}
+                <td colspan="5" class="text-center small">очікується</td>
+              {% else %}
+                <td class="text-end text-nowrap">{{ row.income|floatformat:"0g" }}</td>
+                <td class="text-end text-nowrap">{{ row.expenses|floatformat:"0g" }}</td>
+                <td class="text-end text-nowrap">{{ row.salaries|floatformat:"0g" }}</td>
+                <td class="text-end text-nowrap">{{ row.refunds|floatformat:"0g" }}</td>
+                <td class="text-end text-nowrap fw-semibold {% if row.profit < 0 %}text-danger{% else %}text-success{% endif %}">{{ row.profit|floatformat:"0g" }}</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot class="table-light fw-semibold">
+          <tr>
+            <td>Разом (минулі й поточний)</td>
+            <td class="text-end text-nowrap">{{ year_total.plan|floatformat:"0g" }}</td>
+            <td></td>
+            <td class="text-end text-nowrap">{{ year_total.income|floatformat:"0g" }}</td>
+            <td class="text-end text-nowrap">{{ year_total.expenses|floatformat:"0g" }}</td>
+            <td class="text-end text-nowrap">{{ year_total.salaries|floatformat:"0g" }}</td>
+            <td class="text-end text-nowrap">{{ year_total.refunds|floatformat:"0g" }}</td>
+            <td class="text-end text-nowrap {% if year_total.profit < 0 %}text-danger{% else %}text-success{% endif %}">{{ year_total.profit|floatformat:"0g" }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <p class="small text-muted mt-2 mb-0">Суми в гривнях.</p>
+  </div>
+</div>
+{% endblock %}
