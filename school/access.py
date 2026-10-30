@@ -110,7 +110,7 @@ def subjects_for(user):
 
 
 # ───────────────────────── Creating roles and logins ─────────────────────────
-# Used by the command "python manage.py setup_roles" and by seed_data.
+# Used by the page "Доступ" (staff_accounts), the command "setup_roles" and seed_data.
 
 # What a teacher may do in the admin: only tests and their results
 TEACHER_PERMISSIONS = [
@@ -158,31 +158,87 @@ def setup_role_groups():
     return admin_group, teacher_group
 
 
-def create_teacher_login(teacher, password):
+class LoginError(Exception):
+    """A clear error for the page "Доступ" (for example, the login is taken)."""
+
+
+def suggest_username(teacher):
+    """A login suggestion: surname in Latin letters ("kovalenko").
+    If another teacher already uses it, we add the first letter of the name ("kovalenko.i")."""
+    base = transliterate(teacher.last_name) or f"teacher{teacher.pk}"
+    if Teacher.objects.filter(user__username=base).exclude(pk=teacher.pk).exists():
+        return f"{base}.{transliterate(teacher.first_name)[:1]}"
+    return base
+
+
+def check_username(username):
+    """Only Latin letters, digits and @ . + - _ (a Cyrillic login is hard to type on some phones)."""
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9@.+_-]{3,150}", username or ""):
+        raise LoginError("Логін: від 3 символів, лише латинські літери, цифри та символи @ . + - _")
+
+
+def check_password(password, user=None):
+    """Django rules for passwords (length, not too simple, not only digits). Raises LoginError."""
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
+
+    try:
+        validate_password(password, user=user)
+    except ValidationError as error:
+        raise LoginError(" ".join(error.messages))
+
+
+def create_teacher_login(teacher, password, username=None, check=False):
     """Create a login for a teacher (if he has none) and link it to the Teacher record.
-    Login = surname in Latin letters, for example "kovalenko". Returns (user, created)."""
+    username: empty -> suggest_username(). check=True: check the password by Django rules.
+    A free old login (its teacher was deleted, for example by seed_data --clear) is used again.
+    Returns (user, created)."""
     from django.contrib.auth import get_user_model
     from django.contrib.auth.models import Group
 
     User = get_user_model()
     if teacher.user_id:
         return teacher.user, False
-    base = transliterate(teacher.last_name) or f"teacher{teacher.pk}"
-    username = base
-    # The login is taken by ANOTHER teacher (two teachers with one surname) -> add the first letter of the name.
-    # A free old login (its teacher was deleted) is used again.
-    if Teacher.objects.filter(user__username=username).exclude(pk=teacher.pk).exists():
-        username = f"{base}.{transliterate(teacher.first_name)[:1]}"
-    user, created = User.objects.get_or_create(
-        username=username,
-        defaults={"first_name": teacher.first_name, "last_name": teacher.last_name},
-    )
+    setup_role_groups()  # the groups must exist; it is safe to run many times
+
+    username = (username or suggest_username(teacher)).strip()
+    check_username(username)
+    existing = User.objects.filter(username=username).first()
+    if existing and (Teacher.objects.filter(user=existing).exists() or existing.is_superuser):
+        raise LoginError(f"Логін «{username}» уже зайнятий.")
+
+    user = existing or User(username=username, first_name=teacher.first_name, last_name=teacher.last_name)
+    if check:
+        check_password(password, user)
+    created = existing is None
     if created:
         user.set_password(password)
     # is_staff = True: the teacher can open the admin, but he sees only tests (his permissions)
     user.is_staff = True
+    user.is_active = True
     user.save()
     user.groups.add(Group.objects.get(name=TEACHER_GROUP))
     teacher.user = user
     teacher.save(update_fields=["user"])
     return user, created
+
+
+def create_admin_login(username, password, first_name=""):
+    """Create a new administrator login (for the page "Доступ")."""
+    from django.contrib.auth import get_user_model
+    from django.contrib.auth.models import Group
+
+    User = get_user_model()
+    setup_role_groups()
+    username = username.strip()
+    check_username(username)
+    if User.objects.filter(username=username).exists():
+        raise LoginError(f"Логін «{username}» уже зайнятий.")
+    user = User(username=username, first_name=first_name.strip(), is_staff=True)
+    check_password(password, user)
+    user.set_password(password)
+    user.save()
+    user.groups.add(Group.objects.get(name=ADMIN_GROUP))
+    return user

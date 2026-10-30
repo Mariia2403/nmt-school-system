@@ -17,7 +17,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from .access import (
-    admin_page, get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for,
+    ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
+    get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
 )
 from .models import (
     Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
@@ -817,3 +818,60 @@ def finance(request):
         "year_total": year_total,
     }
     return render(request, "school/finance.html", context)
+
+
+# ───────────────────────── Access (logins) ─────────────────────────
+
+@admin_page
+def staff_accounts(request):
+    """Page "Доступ": the administrator creates logins for teachers, changes passwords,
+    turns access off and adds new administrators. No console is needed."""
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        password = request.POST.get("password", "")
+        try:
+            if action == "create_admin":
+                user = create_admin_login(request.POST.get("username", ""), password, request.POST.get("first_name", ""))
+                messages.success(request, f"Адміністратора «{user.username}» створено.")
+            else:
+                teacher = get_object_or_404(Teacher, pk=request.POST.get("teacher"))
+                if action == "create":
+                    if teacher.user_id:
+                        raise LoginError(f"У викладача {teacher} уже є логін «{teacher.user.username}».")
+                    user, _ = create_teacher_login(teacher, password, request.POST.get("username"), check=True)
+                    messages.success(request, f"Логін «{user.username}» для {teacher} створено. Передайте викладачу логін і пароль.")
+                elif action == "password" and teacher.user:
+                    check_password(password, teacher.user)
+                    teacher.user.set_password(password)
+                    teacher.user.save()
+                    messages.success(request, f"Пароль для «{teacher.user.username}» змінено.")
+                elif action == "toggle" and teacher.user:
+                    # Turning off is safer than deleting: history (who marked the journal) stays
+                    teacher.user.is_active = not teacher.user.is_active
+                    teacher.user.save(update_fields=["is_active"])
+                    state = "увімкнено" if teacher.user.is_active else "вимкнено"
+                    messages.info(request, f"Доступ для «{teacher.user.username}» {state}.")
+                else:
+                    messages.error(request, "Невідома дія.")
+        except LoginError as error:
+            messages.error(request, str(error))
+        # Post/Redirect/Get: F5 after saving does not send the form again
+        return redirect("school:staff_accounts")
+
+    teachers = list(
+        Teacher.objects.select_related("user")
+        .annotate(groups_count=Count("groups", distinct=True))
+        .order_by("-is_active", "last_name", "first_name")
+    )
+    for teacher in teachers:
+        teacher.suggested_username = suggest_username(teacher)
+    admins = (
+        User.objects.filter(Q(is_superuser=True) | Q(groups__name=ADMIN_GROUP))
+        .distinct().order_by("username")
+    )
+    context = {"teachers": teachers, "admins": admins}
+    return render(request, "school/staff_accounts.html", context)

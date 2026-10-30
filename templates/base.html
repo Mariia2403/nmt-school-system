@@ -60,6 +60,12 @@
         {% endif %}
       </ul>
       <ul class="navbar-nav align-items-lg-center">
+        {% if is_school_admin %}
+        <li class="nav-item">
+          <a class="nav-link {% if url_name == 'staff_accounts' %}active{% endif %}"
+             href="{% url 'school:staff_accounts' %}"><i class="bi bi-key"></i> Доступ</a>
+        </li>
+        {% endif %}
         {% if user.is_staff %}
         <li class="nav-item">
           <!-- A teacher uses the admin only to enter test results -->

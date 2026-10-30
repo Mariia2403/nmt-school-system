@@ -22,4 +22,6 @@ urlpatterns = [
     path("debts/call-list/", views.call_list, name="call_list"),
     # Money of the school. The month is in the address: /finance/?month=2026-10
     path("finance/", views.finance, name="finance"),
+    # Logins of teachers and administrators (only for the administrator)
+    path("access/", views.staff_accounts, name="staff_accounts"),
 ]
