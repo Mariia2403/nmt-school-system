@@ -215,7 +215,21 @@ class StudyGroup(models.Model):
         parts = [f"{', '.join(days)} {start:%H:%M}–{end:%H:%M}" for (start, end), days in by_time.items()]
         return "; ".join(parts)
 
+    def next_free_name(self):
+        """Next free short name inside the subject: "група 1", "група 2", ...
+        Example: the subject already has "група 1" and "група 3" -> we return "група 4"."""
+        numbers = [0]
+        for name in StudyGroup.objects.filter(subject_id=self.subject_id).exclude(pk=self.pk).values_list("name", flat=True):
+            match = re.fullmatch(r"група\s*(\d+)", name.strip(), flags=re.IGNORECASE)
+            if match:
+                numbers.append(int(match.group(1)))
+        return f"група {max(numbers) + 1}"
+
     def clean(self):
+        # The name can be left empty in the form: we give the next number ourselves
+        if not (self.name or "").strip() and self.subject_id:
+            self.name = self.next_free_name()
+
         # Without the end date we do not know how many months to bill:
         # monthly invoices would stop at the current month and nobody would get new invoices.
         if not self.end_date:
@@ -290,6 +304,65 @@ class StudyGroup(models.Model):
         # bulk_create: one INSERT for all lessons (we set the teacher ourselves, save() is not called)
         Lesson.objects.bulk_create(new_lessons)
         return len(new_lessons), removed
+
+    def finish(self, on_day):
+        """Finish the group early (or on time): the group stops studying on on_day.
+
+        - the group end date = on_day -> the group goes out of the "Навчаються" list;
+        - open contracts (active, on pause) get status "Завершений" and end on on_day;
+          invoices WITHOUT payments for months after on_day are deleted (Contract.save does it).
+          The month of on_day stays: a month with at least one lesson is paid in full;
+        - planned future lessons without marks are deleted.
+        Money, held lessons, attendance and test results stay: this is history.
+        Returns (contracts_finished, lessons_removed)."""
+        self.end_date = on_day
+        self.save()  # contracts with a later end date move to on_day (update_contract_dates)
+
+        finished = 0
+        for contract in self.contracts.filter(status__in=Contract.OPEN_STATUSES):
+            contract.status = Contract.Status.COMPLETED
+            if not contract.end_date or contract.end_date > on_day:
+                contract.end_date = on_day
+            contract.save()
+            finished += 1
+
+        day_after = timezone.make_aware(datetime.combine(on_day + timedelta(days=1), datetime.min.time()))
+        removed, _ = self.lessons.filter(
+            starts_at__gte=day_after, status=Lesson.Status.PLANNED, attendance__isnull=True
+        ).delete()
+        return finished, removed
+
+    def money_records_count(self):
+        """How many payments and refunds are linked to this group.
+        If there is at least one, the group must not be deleted: it is real money."""
+        payments = Payment.objects.filter(invoice__contract__group=self).count()
+        refunds = Refund.objects.filter(contract__group=self).count()
+        return payments + refunds
+
+    def delete_with_contracts(self):
+        """Delete a group created by mistake (or a test group) in ONE action:
+        its contracts, their invoices, lessons, attendance and group tests.
+        Only if NO money is linked to the group (no payments, no refunds).
+        Example: an admin created "група 7" and enrolled 10 students by mistake ->
+        one button deletes everything, instead of deleting 10 contracts and 80 invoices by hand.
+        Returns a dict with counts of deleted records, or raises ValidationError."""
+        if self.money_records_count():
+            raise ValidationError(
+                "У групі є оплати або повернення — видалити не можна, бо зникнуть реальні гроші "
+                "з Фінансів. Використайте «Завершити групу»."
+            )
+        contracts = Contract.objects.filter(group=self)
+        counts = {
+            "contracts": contracts.count(),
+            "invoices": Invoice.objects.filter(contract__group=self).count(),
+            "lessons": self.lessons.count(),
+        }
+        # Order matters: invoices -> contracts -> group (PROTECT does not let us go the other way).
+        # Lessons, attendance, schedule and group tests are deleted with the group (CASCADE).
+        Invoice.objects.filter(contract__group=self).delete()
+        contracts.delete()
+        self.delete()
+        return counts
 
     def current_students(self):
         """Students of the group = students with an active contract for this group."""

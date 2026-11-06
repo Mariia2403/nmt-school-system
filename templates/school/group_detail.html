@@ -17,6 +17,18 @@
   </div>
   {% if is_school_admin %}
     <div class="d-flex flex-wrap gap-2">
+      <!-- Temporary: opens the contract form in the admin with this group already chosen.
+           A site form for this comes in batch P5. -->
+      {% if free > 0 %}
+        <a href="{% url 'admin:school_contract_add' %}?group={{ group.pk }}&start_date={{ enroll_start|date:'d.m.Y' }}"
+           class="btn btn-primary btn-sm">
+          <i class="bi bi-person-plus"></i> Записати учня
+        </a>
+      {% else %}
+        <span class="d-inline-block" tabindex="0" title="У групі немає вільних місць">
+          <button class="btn btn-primary btn-sm" disabled><i class="bi bi-person-plus"></i> Записати учня</button>
+        </span>
+      {% endif %}
       <!-- POST form: the button changes data, so it is not a simple link -->
       <form method="post" action="{% url 'school:group_sync_lessons' group.pk %}">
         {% csrf_token %}
@@ -223,4 +235,66 @@
     </div>
   </div>
 </div>
+
+{% if is_school_admin %}
+<!-- Finish or delete the group. Kept at the bottom, so nobody clicks it by chance. -->
+<div class="card shadow-sm mt-4 border-danger-subtle">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-gear"></i> Керування групою</div>
+  <div class="card-body">
+    <div class="row g-4">
+      <!-- Finish: the normal way, history stays -->
+      <div class="col-md-6">
+        <h2 class="h6">Завершити групу</h2>
+        {% if is_finished %}
+          <p class="small text-muted mb-0">
+            Група завершилась {{ group.end_date|date:"d.m.Y" }} і вже не показується серед тих, що навчаються.
+            Її оплати, журнал і бали збережено.
+          </p>
+        {% else %}
+          <p class="small text-muted">
+            Група перестає навчатися з вибраної дати: договори стають «Завершеними», майбутні заняття
+            прибираються, неоплачені рахунки за наступні місяці зникають. Оплати, борги, журнал і бали
+            <b>залишаються</b> в історії.
+          </p>
+          <form method="post" action="{% url 'school:group_finish' group.pk %}" class="d-flex flex-wrap gap-2 align-items-end"
+                onsubmit="return confirm('Завершити групу «{{ group.full_name|escapejs }}»? Договорів, що навчаються: {{ taken }}.');">
+            {% csrf_token %}
+            <div>
+              <label for="on_day" class="form-label small mb-1">Останній день навчання</label>
+              <input type="date" id="on_day" name="on_day" class="form-control form-control-sm"
+                     value="{{ finish_default|date:'Y-m-d' }}" min="{{ group.start_date|date:'Y-m-d' }}" required>
+            </div>
+            <button type="submit" class="btn btn-outline-secondary btn-sm">
+              <i class="bi bi-flag"></i> Завершити групу
+            </button>
+          </form>
+        {% endif %}
+      </div>
+
+      <!-- Delete: only for a group created by mistake, only without money -->
+      <div class="col-md-6">
+        <h2 class="h6">Видалити групу</h2>
+        {% if money_records %}
+          <p class="small text-muted mb-0">
+            <i class="bi bi-lock"></i> Видалити не можна: у групі є оплати або повернення ({{ money_records }}).
+            Інакше вони зникнуть з Фінансів. Використайте «Завершити групу».
+          </p>
+        {% else %}
+          <p class="small text-muted">
+            Для групи, створеної помилково. Разом з нею буде видалено: договорів — {{ all_contracts_count }},
+            рахунків — {{ invoices_count }}, занять — {{ lessons_count }}. Це не можна скасувати.
+          </p>
+          <form method="post" action="{% url 'school:group_delete' group.pk %}"
+                onsubmit="return confirm('Видалити групу «{{ group.full_name|escapejs }}» назавжди?\nДоговорів: {{ all_contracts_count }}, рахунків: {{ invoices_count }}, занять: {{ lessons_count }}.');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-danger btn-sm">
+              <i class="bi bi-trash"></i> Видалити групу
+            </button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}

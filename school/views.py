@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db.models import Avg, Count, DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
@@ -546,6 +547,15 @@ def group_detail(request, pk):
         "past_lessons": past_lessons,
         "held_count": held_count,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
+        # Start date for the "Записати учня" button: today, but not before the group starts
+        "enroll_start": max(timezone.localdate(), group.start_date),
+        # For the "Керування групою" block
+        "is_finished": bool(group.end_date and group.end_date < today),
+        "money_records": group.money_records_count(),
+        "invoices_count": Invoice.objects.filter(contract__group=group).count(),
+        "all_contracts_count": group.contracts.count(),
+        "lessons_count": group.lessons.count(),
+        "finish_default": max(today, group.start_date),
     }
     return render(request, "school/group_detail.html", context)
 
@@ -572,6 +582,62 @@ def group_sync_lessons(request, pk):
                 messages.info(request, "Усі заняття вже відповідають розкладу — нічого змінювати не треба.")
     # Post/Redirect/Get: F5 after the button does not repeat the action
     return redirect("school:group_detail", pk=group.pk)
+
+
+@admin_page
+def group_finish(request, pk):
+    """Button "Завершити групу" (only POST): the group stops studying on the chosen day.
+    Nothing is deleted from the money history: the group just goes to the finished groups."""
+    group = get_object_or_404(StudyGroup, pk=pk)
+    if request.method != "POST":
+        return redirect("school:group_detail", pk=group.pk)
+
+    try:
+        on_day = date.fromisoformat(request.POST.get("on_day", ""))
+    except ValueError:
+        messages.error(request, "Вкажіть дату завершення.")
+        return redirect("school:group_detail", pk=group.pk)
+
+    if on_day < group.start_date:
+        messages.error(
+            request,
+            f"Група почалася {group.start_date:%d.%m.%Y} — завершити раніше не можна. "
+            "Якщо групу створили помилково, використайте «Видалити групу».",
+        )
+        return redirect("school:group_detail", pk=group.pk)
+
+    with transaction.atomic():  # all changes or nothing
+        finished, removed = group.finish(on_day)
+    messages.success(
+        request,
+        f"Групу завершено {on_day:%d.%m.%Y}. Договорів завершено: {finished}, "
+        f"майбутніх занять прибрано: {removed}. Оплати, борги й журнал збережено.",
+    )
+    return redirect("school:group_detail", pk=group.pk)
+
+
+@admin_page
+def group_delete(request, pk):
+    """Button "Видалити групу" (only POST): deletes a group created by mistake
+    together with its contracts, invoices and lessons — only if there is no money in it."""
+    group = get_object_or_404(StudyGroup, pk=pk)
+    if request.method != "POST":
+        return redirect("school:group_detail", pk=group.pk)
+
+    name = group.full_name
+    try:
+        with transaction.atomic():  # if something fails, nothing is deleted
+            counts = group.delete_with_contracts()
+    except ValidationError as error:
+        messages.error(request, " ".join(error.messages))
+        return redirect("school:group_detail", pk=group.pk)
+
+    messages.success(
+        request,
+        f"Групу «{name}» видалено разом з договорами ({counts['contracts']}), "
+        f"рахунками ({counts['invoices']}) і заняттями ({counts['lessons']}).",
+    )
+    return redirect("school:group_list")
 
 
 # ───────────────────────── Journal ─────────────────────────
