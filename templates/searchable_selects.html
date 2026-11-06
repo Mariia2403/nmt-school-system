@@ -1,0 +1,37 @@
+<!--
+  Searchable lists: every long drop-down list (more than 10 options) gets a search box.
+  You type "Шевч" and see only matching students, no scrolling through 300 names.
+  Library: Tom Select (from CDN, no installation). Used in base.html and admin/base_site.html.
+-->
+<script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
+<script>
+  (function () {
+    var MIN_OPTIONS = 10;  // short lists (status, method) stay as they are
+
+    function makeSearchable(root) {
+      root.querySelectorAll("select").forEach(function (select) {
+        if (select.tomselect) return;                                   // already done
+        if (select.multiple) return;                                    // lists with many choices: keep Django widgets
+        if (select.classList.contains("admin-autocomplete")) return;    // Django autocomplete already has search
+        if (select.name === "action") return;                           // admin actions
+        if (select.name.indexOf("__prefix__") !== -1) return;           // hidden template row of an inline
+        if (select.closest(".empty-form")) return;
+        if (select.options.length <= MIN_OPTIONS) return;
+
+        new TomSelect(select, {
+          create: false,
+          allowEmptyOption: true,
+          maxOptions: null,  // show all matches, not only the first 50
+          placeholder: "Почніть вводити…",
+          render: {
+            no_results: function () { return '<div class="no-results">Нічого не знайдено</div>'; }
+          }
+        });
+      });
+    }
+
+    document.addEventListener("DOMContentLoaded", function () { makeSearchable(document); });
+    // Admin: a new row after "Додати ще ..." also gets the search
+    document.addEventListener("formset:added", function (event) { makeSearchable(event.target); });
+  })();
+</script>

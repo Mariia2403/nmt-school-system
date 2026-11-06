@@ -1,0 +1,32 @@
+{% extends "admin/base.html" %}
+{% comment %}
+  Our copy of the Django admin template "admin/base_site.html".
+  It is the same as the original, plus searchable drop-down lists (searchable_selects.html).
+  Django finds it first, because templates/ is in TEMPLATES["DIRS"] in settings.py.
+{% endcomment %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.default.min.css" rel="stylesheet">
+  <style>
+    /* The search list must be wide enough for "Прізвище Ім'я" */
+    .ts-wrapper { min-width: 280px; display: inline-block; vertical-align: middle; }
+    .ts-control { padding: 4px 8px; }
+  </style>
+{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
+
+{% block footer %}
+  {{ block.super }}
+  {% include "searchable_selects.html" %}
+{% endblock %}

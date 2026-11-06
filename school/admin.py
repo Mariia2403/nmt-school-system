@@ -54,6 +54,7 @@ class LessonInline(admin.TabularInline):
     model = Lesson
     extra = 0
     fields = ["starts_at", "teacher", "topic", "status"]
+    autocomplete_fields = ["teacher"]  # type a surname instead of scrolling
     show_change_link = True
 
 
@@ -244,7 +245,8 @@ class GroupScheduleAdmin(admin.ModelAdmin):
 class LessonAdmin(admin.ModelAdmin):
     list_display = ["starts_at", "group", "teacher", "topic", "status"]
     list_filter = ["status", "group__subject", "group", "teacher"]
-    search_fields = ["group__name", "topic"]
+    # "математика група 1" finds lessons of "Математика · група 1"
+    search_fields = ["group__name", "group__subject__name", "topic"]
     date_hierarchy = "starts_at"  # quick navigation by year / month / day
     autocomplete_fields = ["group", "teacher"]
     inlines = [AttendanceInline]
@@ -271,7 +273,7 @@ class LessonAdmin(admin.ModelAdmin):
 class AttendanceAdmin(admin.ModelAdmin):
     list_display = ["lesson", "student", "status"]
     list_filter = ["status", "lesson__group"]
-    search_fields = ["student__last_name", "student__first_name", "lesson__group__name"]
+    search_fields = ["student__last_name", "student__first_name", "lesson__group__name", "lesson__group__subject__name"]
     autocomplete_fields = ["lesson", "student"]
 
     def get_queryset(self, request):
@@ -472,7 +474,7 @@ class ContractAdmin(admin.ModelAdmin):
         "discount_pct", "final_nmt_score",
     ]
     list_filter = ["status", "payment_plan", "tariff", "group__subject", "group"]
-    search_fields = ["student__last_name", "student__first_name", "group__name"]
+    search_fields = ["student__last_name", "student__first_name", "group__name", "group__subject__name"]
     autocomplete_fields = ["student", "group", "tariff"]
     inlines = [InvoiceInline, RefundInline]
     actions = ["sync_invoices"]
@@ -512,7 +514,8 @@ class DebtFilter(admin.SimpleListFilter):
 class InvoiceAdmin(admin.ModelAdmin):
     list_display = ["id", "student", "period_month", "amount", "paid", "debt", "due_date"]
     list_filter = [DebtFilter, "period_month", "contract__group"]
-    search_fields = ["contract__student__last_name", "contract__student__first_name"]
+    # "Шевченко математика" finds the invoices of Shevchenko for maths
+    search_fields = ["contract__student__last_name", "contract__student__first_name", "contract__group__subject__name"]
     autocomplete_fields = ["contract"]
     inlines = [PaymentInline]
 
