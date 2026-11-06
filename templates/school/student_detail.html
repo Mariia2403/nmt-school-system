@@ -13,9 +13,14 @@
     <span class="text-muted">{{ student.grade }} клас · зареєстрований {{ student.registered_at|date:"d.m.Y" }}</span>
   </div>
   {% if is_school_admin %}
-    <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
-      <i class="bi bi-pencil"></i> Редагувати
-    </a>
+    <div class="d-flex gap-2">
+      <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-success btn-sm">
+        <i class="bi bi-cash-coin"></i> Внести оплату
+      </a>
+      <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
+        <i class="bi bi-pencil"></i> Редагувати
+      </a>
+    </div>
   {% endif %}
 </div>
 
@@ -68,6 +73,67 @@
     </div>
   </div>
 </div>
+
+<!-- Chart: NMT scores over time -->
+{% if chart %}
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span class="fw-semibold"><i class="bi bi-graph-up"></i> Динаміка балів НМТ</span>
+    <span class="small text-muted">
+      тестів: {{ chart.count }}
+      {% for c in chart.changes %}
+        · {{ c.subject }}
+        <strong class="{% if c.delta > 0 %}text-success{% elif c.delta < 0 %}text-danger{% endif %}">
+          {% if c.delta > 0 %}+{% endif %}{{ c.delta }}
+        </strong>
+      {% endfor %}
+      {% if chart.failed %} · <span class="text-danger">поріг не подолано: {{ chart.failed }}</span>{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    <!-- A fixed height: on a phone the chart is not too tall -->
+    <div style="position: relative; height: 280px;">
+      <canvas id="nmt-chart" aria-label="Графік балів НМТ"></canvas>
+    </div>
+    <div class="small text-muted mt-2">
+      Діагностичні, пробні й підсумкові тести (шкала 100–200). Тематичні тести (у %) — у вкладці «Тести».
+    </div>
+  </div>
+</div>
+<!-- json_script puts the data into the page safely (no problems with quotes in names) -->
+{{ chart|json_script:"nmt-chart-data" }}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  (function () {
+    var chart = JSON.parse(document.getElementById("nmt-chart-data").textContent);
+    new Chart(document.getElementById("nmt-chart"), {
+      type: "line",
+      data: { labels: chart.labels, datasets: chart.datasets },
+      options: {
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          y: { min: 100, max: 200, title: { display: true, text: "Бал НМТ" } }
+        },
+        plugins: {
+          // Legend: small lines instead of boxes (a dashed line is clear for "Гарантія")
+          legend: { position: "bottom", labels: { usePointStyle: true, pointStyle: "line", boxWidth: 30 } },
+          tooltip: {
+            callbacks: {
+              // "Математика: 165 (Пробне НМТ №2: математика)"
+              label: function (item) {
+                if (item.raw === null) return null;
+                var note = item.dataset.notes[item.dataIndex];
+                return item.dataset.label + ": " + item.raw + (note ? " (" + note + ")" : "");
+              }
+            }
+          }
+        }
+      }
+    });
+  })();
+</script>
+{% endif %}
 
 <!-- Tabs -->
 <ul class="nav nav-tabs" role="tablist">

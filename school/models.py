@@ -15,6 +15,7 @@ Some fields are calculated automatically if you leave them empty
 Note: do not name it _prepare() - Django already uses this name inside models.
 """
 import re
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -1107,6 +1108,21 @@ class Payment(models.Model):
 
     def clean(self):
         self._fill_defaults()
+        # One invoice cannot get more money than its amount.
+        # Otherwise the extra money "hangs" on this invoice and does not close other debts.
+        # To pay several invoices at once use the page "Внести оплату" on the website.
+        if self.invoice_id and self.amount is not None:
+            other = self.invoice.payments.exclude(pk=self.pk).aggregate(s=Sum("amount"))["s"] or Decimal("0")
+            left = self.invoice.amount - other
+            if self.amount > left:
+                raise ValidationError({
+                    "amount": f"За цим рахунком лишилось сплатити {max(left, Decimal('0'))} грн. "
+                              "Більшу суму внесіть через «Внести оплату» в картці учня: "
+                              "система розкладе її на кілька рахунків."
+                })
+        # A payment from the future is a typing error (5 minutes are allowed for clock differences)
+        if self.paid_at and self.paid_at > timezone.now() + timedelta(minutes=5):
+            raise ValidationError({"paid_at": "Дата оплати не може бути в майбутньому."})
 
     def save(self, *args, **kwargs):
         self._fill_defaults()

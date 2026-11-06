@@ -331,9 +331,10 @@ class Command(BaseCommand):
         Attendance.objects.bulk_create(attendance)
 
     def score_for(self, student, test_day):
-        """NMT scale score (100-200): student level + progress over time + some luck."""
-        progress = (test_day - self.year_start).days // 15
-        return max(100, min(200, self.skill[student.id] + progress + random.randint(-12, 12)))
+        """NMT scale score (100-200): student level + progress over time + some luck.
+        Progress: about +5 points a month, luck: -6..+6 (so most students grow, some do not)."""
+        progress = (test_day - self.year_start).days // 6
+        return max(100, min(200, self.skill[student.id] + progress + random.randint(-6, 6)))
 
     def percent_for(self, student, test_day):
         """Topic test score in percent (0-100).
@@ -376,22 +377,32 @@ class Command(BaseCommand):
                     # Diagnostic -> test score + NMT score, topic test -> percent
                     results.append(self.make_result(test, student, day))
 
-        # School-wide trial NMT in Ukrainian for all groups of the subject (group is empty)
-        trial_day = self.year_start + timedelta(days=46)
-        if trial_day <= self.today:
-            subject = self.subjects["Українська мова"]
-            test = Test.objects.create(subject=subject, group=None, title="Пробне НМТ: українська мова",
-                                       kind=Test.Kind.TRIAL, held_at=trial_day)
-            # All students of the subject on this day (one student can be in two groups)
-            participants = {}
-            for group in self.groups:
-                if group.subject_id == subject.id:
-                    for student in self.members_on(group, trial_day):
-                        participants[student.id] = student
-            # The weakest participant does not pass the threshold: the pages show this case too
-            weakest_id = min(participants, key=lambda sid: self.skill[sid]) if participants else None
-            for student_id, student in participants.items():
-                results.append(self.make_result(test, student, trial_day, fail=student_id == weakest_id))
+        # School-wide trial NMT for every subject (group is empty) every 3 weeks.
+        # Scores grow a little over time, so the chart in the student card shows progress.
+        subjects_with_groups = {g.subject_id: g.subject for g in self.groups}
+        for number, days in enumerate([25, 46, 67, 88, 109, 130], start=1):
+            trial_day = self.year_start + timedelta(days=days)
+            if trial_day > self.today:
+                break
+            for subject in subjects_with_groups.values():
+                if subject.name == "Українська мова" and days == 46:
+                    title = "Пробне НМТ: українська мова"  # the test from the earlier steps keeps its name
+                else:
+                    title = f"Пробне НМТ №{number}: {subject.name}"
+                test = Test.objects.create(subject=subject, group=None, title=title,
+                                           kind=Test.Kind.TRIAL, held_at=trial_day)
+                # All students of the subject on this day (one student can be in two groups)
+                participants = {}
+                for group in self.groups:
+                    if group.subject_id == subject.id:
+                        for student in self.members_on(group, trial_day):
+                            participants[student.id] = student
+                # In this one test the weakest participant does not pass the threshold
+                fail_id = None
+                if title == "Пробне НМТ: українська мова" and participants:
+                    fail_id = min(participants, key=lambda sid: self.skill[sid])
+                for student_id, student in participants.items():
+                    results.append(self.make_result(test, student, trial_day, fail=student_id == fail_id))
         TestResult.objects.bulk_create(results)
 
     def create_invoices_and_payments(self):

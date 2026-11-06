@@ -13,6 +13,8 @@ urlpatterns = [
     path("students/", views.student_list, name="student_list"),
     # <int:pk> takes the number from the address, for example /students/5/ -> pk=5
     path("students/<int:pk>/", views.student_detail, name="student_detail"),
+    # The administrator enters money from parents; the system splits it between invoices
+    path("students/<int:pk>/payment/", views.student_payment, name="student_payment"),
     # Students with an overdue debt: the administrator calls their parents
     path("groups/", views.group_list, name="group_list"),
     path("groups/<int:pk>/", views.group_detail, name="group_detail"),

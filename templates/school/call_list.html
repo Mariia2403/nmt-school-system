@@ -47,6 +47,7 @@
           <th>Телефон учня</th>
           <th class="text-end">Борг</th>
           <th class="text-end">Прострочено</th>
+          <th class="d-print-none"></th>
         </tr>
       </thead>
       <tbody>
@@ -85,6 +86,12 @@
             <td class="text-end text-nowrap">
               <span class="badge text-bg-danger">{{ row.days_overdue }} дн.</span>
               <div class="small text-muted">з {{ row.oldest_due|date:"d.m.Y" }}</div>
+            </td>
+            <td class="text-end d-print-none">
+              <!-- Parents paid after the call -> enter the money right away -->
+              <a href="{% url 'school:student_payment' row.student.pk %}" class="btn btn-success btn-sm text-nowrap">
+                <i class="bi bi-cash-coin"></i> Оплатили
+              </a>
             </td>
           </tr>
         {% endfor %}

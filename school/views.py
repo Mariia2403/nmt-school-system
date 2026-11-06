@@ -4,7 +4,7 @@ Every page is only for logged-in users with a role (see access.py):
 @staff_page  - administrator and teachers (a teacher sees only his own data),
 @admin_page  - only the administrator (money and debts).
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -321,6 +321,7 @@ def student_detail(request, pk):
 
     context = {
         "student": student,
+        "chart": nmt_chart_data(results, contracts),
         "contracts": contracts,
         "attendance": attendance[:30],
         "attendance_total": stats["total"],
@@ -334,6 +335,69 @@ def student_detail(request, pk):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
     }
     return render(request, "school/student_detail.html", context)
+
+
+# Colors of subjects on the chart: very different colors, so lines are easy to tell apart
+SUBJECT_COLORS = ["#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#be185d", "#ca8a04", "#4b5563"]
+
+
+def nmt_chart_data(results, contracts):
+    """Data for the chart "Динаміка балів НМТ" in the student card (Chart.js).
+    Only tests on the NMT scale (diagnostic, trial, final). Topic tests are in %,
+    so they are not on this chart. "Поріг не подолано" = an empty point (a gap in the line).
+    Returns None if there is nothing to draw."""
+    nmt = [r for r in results if r.test.kind in Test.NMT_SCALE_KINDS]
+    if not nmt:
+        return None
+    nmt.sort(key=lambda r: r.test.held_at)
+    days = sorted({r.test.held_at for r in nmt})
+    labels = [day.strftime("%d.%m") for day in days]
+
+    datasets = []
+    subjects = sorted({r.test.subject for r in nmt}, key=lambda s: s.name)
+    # The place of the subject in the list of ALL subjects -> the same subject has the same color for every student
+    all_subjects = list(Subject.objects.order_by("name").values_list("pk", flat=True))
+    for subject in subjects:
+        by_day = {r.test.held_at: r for r in nmt if r.test.subject_id == subject.pk}
+        color = SUBJECT_COLORS[all_subjects.index(subject.pk) % len(SUBJECT_COLORS)]
+        datasets.append({
+            "label": subject.name,
+            "data": [by_day[d].score if d in by_day else None for d in days],
+            # Text for the tooltip: test name and "поріг не подолано"
+            "notes": [
+                (by_day[d].test.title + (" — поріг не подолано" if by_day[d].threshold_failed else ""))
+                if d in by_day else "" for d in days
+            ],
+            "borderColor": color,
+            "backgroundColor": color,
+            "spanGaps": True,  # join the points over days without this subject
+            "tension": 0.25,
+        })
+
+    # The guaranteed score of the tariff (for example, 170): a dashed line
+    guarantees = sorted({c.tariff.guarantee_min_score for c in contracts
+                         if c.tariff.has_guarantee and c.tariff.guarantee_min_score})
+    for score in guarantees:
+        datasets.append({
+            "label": f"Гарантія {score}",
+            "data": [score] * len(days),
+            "notes": [""] * len(days),
+            "borderColor": "#6b7280",
+            "backgroundColor": "#6b7280",
+            "borderDash": [6, 4],
+            "pointRadius": 0,
+            "borderWidth": 1.5,
+            "isGuarantee": True,  # the legend shows it as a short line, not a box
+        })
+
+    # Progress of every subject: the last score minus the first score ("Математика +12")
+    changes = []
+    for subject in subjects:
+        scores = [r.score for r in nmt if r.test.subject_id == subject.pk and r.score is not None]
+        if len(scores) >= 2:
+            changes.append({"subject": subject.name, "delta": scores[-1] - scores[0]})
+    failed = sum(1 for r in nmt if r.threshold_failed)
+    return {"labels": labels, "datasets": datasets, "changes": changes, "failed": failed, "count": len(nmt)}
 
 
 # ───────────────────────── Groups ─────────────────────────
@@ -818,6 +882,106 @@ def finance(request):
         "year_total": year_total,
     }
     return render(request, "school/finance.html", context)
+
+
+# ───────────────────────── Payments ─────────────────────────
+
+def unpaid_invoices(student):
+    """Invoices of the student that are not fully paid, oldest first.
+    Every invoice gets debt_value (how much is still not paid)."""
+    result = []
+    for inv in (
+        invoices_with_paid().filter(contract__student=student)
+        .order_by("due_date", "period_month", "pk")
+    ):
+        inv.debt_value = inv.amount - inv.paid_sum
+        if inv.debt_value > 0:
+            result.append(inv)
+    return result
+
+
+def allocate_payment(invoices, amount):
+    """Split the money between invoices: first the oldest debt, then the next one, and so on.
+    Example: debts 2040 (September) and 2040 (October), the parent pays 3000
+             -> 2040 to September, 960 to October.
+    Returns (plan, rest): plan = [(invoice, part), ...], rest = money that did not fit."""
+    plan, rest = [], amount
+    for inv in invoices:
+        if rest <= 0:
+            break
+        part = min(inv.debt_value, rest)
+        plan.append((inv, part))
+        rest -= part
+    return plan, rest
+
+
+@admin_page
+def student_payment(request, pk):
+    """Page "Внести оплату": the administrator writes only the amount,
+    the system puts it on the invoices (oldest debts first)."""
+    today = timezone.localdate()
+    student = get_object_or_404(Student, pk=pk)
+    invoices = unpaid_invoices(student)
+    for inv in invoices:
+        inv.is_overdue = is_overdue(inv, today)
+        inv.is_future = inv.due_date > today
+    total_now = sum((inv.debt_value for inv in invoices if not inv.is_future), Decimal("0"))
+    total_all = sum((inv.debt_value for inv in invoices), Decimal("0"))
+
+    form = {"amount": "", "method": Payment.Method.CASH, "paid_at": timezone.localtime().strftime("%Y-%m-%dT%H:%M")}
+    if request.method == "POST":
+        form.update({key: request.POST.get(key, "").strip() for key in form})
+        errors = []
+        try:
+            amount = Decimal(form["amount"].replace(",", ".").replace(" ", ""))
+        except Exception:
+            amount = None
+        if amount is None or amount <= 0:
+            errors.append("Вкажіть суму більшу за 0.")
+        elif amount != amount.quantize(Decimal("0.01")):
+            errors.append("Сума — до копійок (два знаки після коми).")
+        if form["method"] not in Payment.Method.values:
+            errors.append("Оберіть спосіб оплати.")
+        try:
+            paid_at = timezone.make_aware(datetime.fromisoformat(form["paid_at"]))
+            if paid_at > timezone.now() + timedelta(minutes=5):
+                errors.append("Дата оплати не може бути в майбутньому.")
+        except ValueError:
+            errors.append("Вкажіть дату й час оплати.")
+        if not errors:
+            plan, rest = allocate_payment(invoices, amount)
+            if rest > 0:
+                errors.append(
+                    f"Сума більша за всі рахунки учня на {rest:.2f} грн (усього до сплати, з наперед: {total_all:.2f} грн). "
+                    "Якщо батьки переплатили, оформіть «Повернення коштів» з причиною «Переплата»."
+                )
+        if errors:
+            for error in errors:
+                messages.error(request, error)
+        else:
+            # atomic: all parts of the payment are saved together, or nothing is saved
+            with transaction.atomic():
+                lines = []
+                for inv, part in plan:
+                    payment = Payment(invoice=inv, amount=part, paid_at=paid_at, method=form["method"])
+                    payment.full_clean()  # the same checks as in the admin
+                    payment.save()
+                    when = "весь курс" if inv.contract.payment_plan == Contract.PaymentPlan.PREPAID else f"{inv.period_month:%m.%Y}"
+                    lines.append(f"{inv.contract.group.full_name}, {when}: {part:.2f} грн")
+            messages.success(request, f"Оплату {amount:.2f} грн внесено. Зараховано: " + "; ".join(lines) + ".")
+            return redirect("school:student_detail", pk=student.pk)
+
+    context = {
+        "student": student,
+        "invoices": invoices,
+        "total_now": total_now,
+        "total_all": total_all,
+        "overdue_total": sum((inv.debt_value for inv in invoices if inv.is_overdue), Decimal("0")),
+        "methods": Payment.Method.choices,
+        "form": form,
+        "overdue_days": settings.DEBT_OVERDUE_DAYS,
+    }
+    return render(request, "school/student_payment.html", context)
 
 
 # ───────────────────────── Access (logins) ─────────────────────────

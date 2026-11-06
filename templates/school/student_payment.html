@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Внести оплату: {{ student }} — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:student_detail' student.pk %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До картки учня
+</a>
+
+<h1 class="h3 mt-2 mb-1"><i class="bi bi-cash-coin"></i> Внести оплату</h1>
+<p class="text-muted mb-3">
+  {{ student.last_name }} {{ student.first_name }} · батьки: {{ student.parent_name|default:"—" }}
+  {% if student.parent_phone %}· {{ student.parent_phone }}{% endif %}
+</p>
+
+<div class="row g-3 mb-3">
+  <div class="col-sm-4">
+    <div class="card stat-card shadow-sm h-100 {% if overdue_total %}border-danger{% endif %}">
+      <div class="card-body">
+        <div class="small text-muted">Прострочено (понад {{ overdue_days }} дн.)</div>
+        <div class="h3 mb-0 {% if overdue_total %}text-danger{% endif %}">{{ overdue_total|floatformat:"2g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="small text-muted">До сплати зараз</div>
+        <div class="h3 mb-0">{{ total_now|floatformat:"2g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="small text-muted">Разом з майбутніми місяцями</div>
+        <div class="h3 mb-0 text-muted">{{ total_all|floatformat:"2g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- The form -->
+  <div class="col-lg-5">
+    <form method="post" class="card card-body shadow-sm">
+      {% csrf_token %}
+      <div class="mb-3">
+        <label for="amount" class="form-label">Сума, ₴</label>
+        <input type="text" inputmode="decimal" name="amount" id="amount" value="{{ form.amount }}"
+               class="form-control form-control-lg" placeholder="{{ total_now|floatformat:2 }}" required autofocus>
+        {% if total_now %}
+          <!-- Quick buttons: the most common amounts -->
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            {% if overdue_total and overdue_total != total_now %}
+              <button type="button" class="btn btn-outline-danger btn-sm" data-amount="{{ overdue_total|floatformat:2 }}">Лише прострочене</button>
+            {% endif %}
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-amount="{{ total_now|floatformat:2 }}">Усе до сплати зараз</button>
+          </div>
+        {% endif %}
+      </div>
+      <div class="mb-3">
+        <label for="method" class="form-label">Спосіб оплати</label>
+        <select name="method" id="method" class="form-select">
+          {% for value, label in methods %}
+            <option value="{{ value }}" {% if value == form.method %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="mb-3">
+        <label for="paid_at" class="form-label">Дата й час оплати</label>
+        <input type="datetime-local" name="paid_at" id="paid_at" value="{{ form.paid_at }}" class="form-control" required>
+      </div>
+      <button type="submit" class="btn btn-success btn-lg"><i class="bi bi-check2-circle"></i> Внести оплату</button>
+      <p class="small text-muted mt-3 mb-0">
+        Гроші зараховуються <strong>спершу на найстаріші борги</strong>, потім на поточний місяць, потім наперед.
+        Борг зникає з усіх сторінок автоматично.
+      </p>
+    </form>
+  </div>
+
+  <!-- Unpaid invoices -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-semibold">Неоплачені рахунки (у порядку зарахування)</div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead><tr><th>#</th><th>Група</th><th>За</th><th>Сплатити до</th><th class="text-end">Лишилось</th><th>Стан</th></tr></thead>
+          <tbody>
+            {% for inv in invoices %}
+              <tr class="{% if inv.is_overdue %}table-danger{% elif inv.is_future %}text-muted{% endif %}">
+                <td>{{ forloop.counter }}</td>
+                <td>{{ inv.contract.group.full_name }}</td>
+                <td class="small">{% if inv.contract.payment_plan == "prepaid" %}весь курс{% else %}{{ inv.period_month|date:"F Y" }}{% endif %}</td>
+                <td class="text-nowrap">{{ inv.due_date|date:"d.m.Y" }}</td>
+                <td class="text-end text-nowrap fw-semibold">{{ inv.debt_value|floatformat:"2g" }} ₴</td>
+                <td>
+                  {% if inv.is_overdue %}<span class="badge text-bg-danger">прострочено</span>
+                  {% elif inv.is_future %}<span class="badge text-bg-light border">наперед</span>
+                  {% else %}<span class="badge text-bg-warning">до сплати</span>{% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="6" class="text-success"><i class="bi bi-check-circle"></i> Усі рахунки сплачено.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Quick amount buttons: put the amount into the field
+  document.querySelectorAll("[data-amount]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      document.getElementById("amount").value = button.dataset.amount;
+    });
+  });
+</script>
+{% endblock %}

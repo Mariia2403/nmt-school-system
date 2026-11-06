@@ -172,9 +172,10 @@
         </tbody>
       </table>
     </div>
-    {% if user.is_staff %}
-      <a href="{% url 'admin:school_payment_add' %}" class="btn btn-outline-primary btn-sm mt-2"><i class="bi bi-plus-lg"></i> Внести оплату</a>
-    {% endif %}
+    <p class="small text-muted mt-2 mb-0">
+      <i class="bi bi-info-circle"></i> Щоб внести оплату, відкрийте картку учня → «Внести оплату»
+      (або вкладку «Боржники» тут). Система сама розкладе суму на рахунки.
+    </p>
   </div>
 
   <!-- Debtors (always for today) -->
@@ -185,7 +186,7 @@
     </p>
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>Учень</th><th>Телефон батьків</th><th class="text-end">Борг</th><th class="text-end">Прострочено</th></tr></thead>
+        <thead><tr><th>Учень</th><th>Телефон батьків</th><th class="text-end">Борг</th><th class="text-end">Прострочено</th><th></th></tr></thead>
         <tbody>
           {% for d in debtors %}
             <tr>
@@ -193,9 +194,14 @@
               <td class="text-nowrap">{{ d.student.parent_phone|default:"—" }}</td>
               <td class="text-end text-danger fw-semibold text-nowrap">{{ d.debt|floatformat:"0g" }} ₴</td>
               <td class="text-end"><span class="badge text-bg-danger">{{ d.days_overdue }} дн.</span></td>
+              <td class="text-end">
+                <a href="{% url 'school:student_payment' d.student.pk %}" class="btn btn-success btn-sm text-nowrap">
+                  <i class="bi bi-cash-coin"></i> Внести оплату
+                </a>
+              </td>
             </tr>
           {% empty %}
-            <tr><td colspan="4" class="text-muted">Прострочених боргів немає.</td></tr>
+            <tr><td colspan="5" class="text-muted">Прострочених боргів немає.</td></tr>
           {% endfor %}
         </tbody>
       </table>
