@@ -151,7 +151,7 @@
   <div class="tab-pane fade show active" id="tab-contracts">
     <div class="table-responsive">
       <table class="table align-middle mb-0">
-        <thead><tr><th>№</th><th>Група</th><th>Викладач</th>{% if is_school_admin %}<th>Тариф</th><th>Оплата</th>{% endif %}<th>Період</th>{% if is_school_admin %}<th>Знижка</th>{% endif %}<th>Статус</th></tr></thead>
+        <thead><tr><th>№</th><th>Група</th><th>Викладач</th>{% if is_school_admin %}<th>Тариф</th><th>Оплата</th>{% endif %}<th>Період</th>{% if is_school_admin %}<th>Знижка</th>{% endif %}<th>Статус</th>{% if is_school_admin %}<th>Дії</th>{% endif %}</tr></thead>
         <tbody>
           {% for c in contracts %}
             <tr>
@@ -164,7 +164,16 @@
               <td>{{ c.tariff.name }}</td>
               <td>{{ c.get_payment_plan_display }}</td>
               {% endif %}
-              <td class="text-nowrap">{{ c.start_date|date:"d.m.Y" }} — {{ c.end_date|date:"d.m.Y"|default:"…" }}</td>
+              <td class="text-nowrap">
+                {{ c.start_date|date:"d.m.Y" }} — {{ c.end_date|date:"d.m.Y"|default:"…" }}
+                <!-- Pauses: history of all pauses of this contract -->
+                {% for p in c.pauses.all %}
+                  <div class="small text-warning-emphasis">
+                    <i class="bi bi-pause-circle"></i> пауза {{ p.start_date|date:"d.m.Y" }} — {% if p.end_date %}{{ p.end_date|date:"d.m.Y" }}{% else %}триває{% endif %}
+                    {% if p.reason %}<span class="text-muted">({{ p.reason }})</span>{% endif %}
+                  </div>
+                {% endfor %}
+              </td>
               {% if is_school_admin %}
               <td>{% if c.discount_pct %}{{ c.discount_pct|floatformat:0 }}%{% else %}—{% endif %}</td>
               {% endif %}
@@ -172,10 +181,59 @@
                 <span class="badge text-bg-{% if c.status == 'active' %}success{% elif c.status == 'suspended' %}warning{% else %}secondary{% endif %}">
                   {{ c.get_status_display }}
                 </span>
+                {% if is_school_admin %}
+                  <!-- Refund requests that still wait: the admin must give the money back -->
+                  {% for r in c.refunds.all %}
+                    {% if r.status == "pending" or r.status == "approved" %}
+                      <div class="small text-danger mt-1">повернути {{ r.amount|floatformat:"0g" }} ₴ ({{ r.get_status_display|lower }})</div>
+                    {% endif %}
+                  {% endfor %}
+                {% endif %}
               </td>
+              {% if is_school_admin %}
+              <td class="small" style="min-width: 210px;">
+                <!-- <details> opens a small form without JavaScript -->
+                {% if c.status == "active" %}
+                  <details class="mb-1">
+                    <summary class="text-primary"><i class="bi bi-pause-circle"></i> Поставити на паузу</summary>
+                    <form method="post" action="{% url 'school:contract_action' c.pk 'pause' %}" class="mt-2">
+                      {% csrf_token %}
+                      <label class="form-label small mb-0">Перший день без занять</label>
+                      <input type="date" name="day" class="form-control form-control-sm mb-1" value="{{ today|date:'Y-m-d' }}" required>
+                      <input type="text" name="reason" class="form-control form-control-sm mb-1" placeholder="Причина (не обов'язково)" maxlength="200">
+                      <button class="btn btn-warning btn-sm">На паузу</button>
+                    </form>
+                  </details>
+                {% elif c.status == "suspended" %}
+                  <details class="mb-1">
+                    <summary class="text-primary"><i class="bi bi-play-circle"></i> Повернути з паузи</summary>
+                    <form method="post" action="{% url 'school:contract_action' c.pk 'resume' %}" class="mt-2">
+                      {% csrf_token %}
+                      <label class="form-label small mb-0">Перший день занять</label>
+                      <input type="date" name="day" class="form-control form-control-sm mb-1" value="{{ today|date:'Y-m-d' }}" required>
+                      <button class="btn btn-success btn-sm">Повернути</button>
+                    </form>
+                  </details>
+                {% endif %}
+                {% if c.status == "active" or c.status == "suspended" %}
+                  <details>
+                    <summary class="text-danger"><i class="bi bi-box-arrow-right"></i> Учень пішов</summary>
+                    <form method="post" action="{% url 'school:contract_action' c.pk 'leave' %}" class="mt-2"
+                          onsubmit="return confirm('Розірвати договір №{{ c.pk }} ({{ c.group.full_name|escapejs }})? Неоплачені рахунки після останнього дня зникнуть.');">
+                      {% csrf_token %}
+                      <label class="form-label small mb-0">Останній день навчання</label>
+                      <input type="date" name="day" class="form-control form-control-sm mb-1" value="{{ today|date:'Y-m-d' }}" required>
+                      <button class="btn btn-outline-danger btn-sm">Розірвати договір</button>
+                    </form>
+                  </details>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              {% endif %}
             </tr>
           {% empty %}
-            <tr><td colspan="8" class="text-muted">Договорів немає.</td></tr>
+            <tr><td colspan="9" class="text-muted">Договорів немає.</td></tr>
           {% endfor %}
         </tbody>
       </table>

@@ -18,7 +18,7 @@ from django.db.models.functions import Coalesce
 
 from .access import groups_for, is_admin, students_for, subjects_for
 from .models import (
-    Attendance, Contract, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
+    Attendance, Contract, ContractPause, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
     check_conversion_rows, parse_conversion_text,
 )
@@ -121,6 +121,13 @@ class InvoiceInline(admin.TabularInline):
         return False  # new invoices come from the plan, not by hand
 
 
+class ContractPauseInline(admin.TabularInline):
+    """Pauses of a contract. Usually they are made with the buttons in the student card."""
+    model = ContractPause
+    extra = 0
+    fields = ["start_date", "end_date", "reason"]
+
+
 class RefundInline(admin.TabularInline):
     model = Refund
     extra = 0
@@ -137,14 +144,14 @@ class PaymentInline(admin.TabularInline):
 
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["name"]
     search_fields = ["name"]
 
 
 @admin.register(Teacher)
 class TeacherAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["last_name", "first_name", "phone", "rate_per_lesson", "user", "is_active"]
     list_filter = ["is_active"]
     search_fields = ["last_name", "first_name", "phone"]
@@ -154,7 +161,7 @@ class TeacherAdmin(admin.ModelAdmin):
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["last_name", "first_name", "grade", "phone", "parent_phone", "is_active", "registered_at"]
     list_filter = ["grade", "registered_at"]
     search_fields = ["last_name", "first_name", "phone", "parent_name", "parent_phone"]
@@ -172,7 +179,7 @@ class StudentAdmin(admin.ModelAdmin):
 
 @admin.register(Tariff)
 class TariffAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = [
         "name", "monthly_price", "lessons_per_month", "has_guarantee",
         "guarantee_min_score", "refund_pct", "is_active",
@@ -186,7 +193,7 @@ class TariffAdmin(admin.ModelAdmin):
 
 @admin.register(StudyGroup)
 class StudyGroupAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = [
         "full_name", "teacher", "level", "schedule", "students_count", "max_students", "start_date", "end_date",
     ]
@@ -251,7 +258,7 @@ class StudyGroupAdmin(admin.ModelAdmin):
 
 @admin.register(GroupSchedule)
 class GroupScheduleAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     """The schedule of the whole school in one list (it is easy to find free rooms and hours)."""
     list_display = ["weekday", "start_time", "end_time", "group", "teacher"]
     list_filter = ["weekday", "group__subject", "group__teacher"]
@@ -269,7 +276,7 @@ class GroupScheduleAdmin(admin.ModelAdmin):
 
 @admin.register(Lesson)
 class LessonAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["starts_at", "group", "teacher", "topic", "status"]
     list_filter = ["status", "group__subject", "group", "teacher"]
     # "математика група 1" finds lessons of "Математика · група 1"
@@ -298,7 +305,7 @@ class LessonAdmin(admin.ModelAdmin):
 
 @admin.register(Attendance)
 class AttendanceAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["lesson", "student", "status"]
     list_filter = ["status", "lesson__group"]
     search_fields = ["student__last_name", "student__first_name", "lesson__group__name", "lesson__group__subject__name"]
@@ -310,7 +317,7 @@ class AttendanceAdmin(admin.ModelAdmin):
 
 @admin.register(Test)
 class TestAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["title", "subject", "group", "kind", "held_at", "table_used", "results_count"]
     list_filter = ["kind", "subject", "group"]
     search_fields = ["title"]
@@ -370,7 +377,7 @@ class TestAdmin(admin.ModelAdmin):
 
 @admin.register(TestResult)
 class TestResultAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["test", "student", "raw_score", "result"]
     list_filter = ["test__kind", "test__subject"]
     search_fields = ["student__last_name", "student__first_name", "test__title"]
@@ -462,7 +469,7 @@ class ConversionTableForm(forms.ModelForm):
 
 @admin.register(ConversionTable)
 class ConversionTableAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     form = ConversionTableForm
     list_display = ["subject", "year", "threshold_raw", "max_raw", "rows_count", "is_complete", "source"]
     list_filter = ["subject", "year"]
@@ -500,7 +507,7 @@ class ConversionTableAdmin(admin.ModelAdmin):
 
 @admin.register(Contract)
 class ContractAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = [
         "id", "student", "group", "tariff", "payment_plan", "status", "start_date", "end_date",
         "discount_pct", "final_nmt_score",
@@ -508,8 +515,13 @@ class ContractAdmin(admin.ModelAdmin):
     list_filter = ["status", "payment_plan", "tariff", "group__subject", "group"]
     search_fields = ["student__last_name", "student__first_name", "group__name", "group__subject__name"]
     autocomplete_fields = ["student", "group", "tariff"]
-    inlines = [InvoiceInline, RefundInline]
+    inlines = [ContractPauseInline, InvoiceInline, RefundInline]
     actions = ["sync_invoices"]
+
+    def save_related(self, request, form, formsets, change):
+        # Pauses (inline) are saved after the contract: only now the invoices can follow them
+        super().save_related(request, form, formsets, change)
+        form.instance.sync_invoices()
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("student", "group__subject", "tariff")
@@ -544,7 +556,7 @@ class DebtFilter(admin.SimpleListFilter):
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["id", "student", "period_month", "amount", "paid", "debt", "due_date"]
     list_filter = [DebtFilter, "period_month", "contract__group"]
     # "Шевченко математика" finds the invoices of Shevchenko for maths
@@ -580,7 +592,7 @@ class InvoiceAdmin(admin.ModelAdmin):
 
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["paid_at", "student", "invoice", "amount", "reserve_amount", "method"]
     list_filter = ["method", "paid_at"]
     search_fields = ["invoice__contract__student__last_name", "invoice__contract__student__first_name"]
@@ -597,7 +609,7 @@ class PaymentAdmin(admin.ModelAdmin):
 
 @admin.register(Refund)
 class RefundAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["created_at", "contract", "reason", "amount", "status", "paid_at"]
     list_filter = ["status", "reason"]
     search_fields = ["contract__student__last_name", "contract__student__first_name"]
@@ -609,7 +621,7 @@ class RefundAdmin(admin.ModelAdmin):
 
 @admin.register(Expense)
 class ExpenseAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["spent_at", "category", "amount", "comment"]
     list_filter = ["category"]
     search_fields = ["comment"]
@@ -618,7 +630,7 @@ class ExpenseAdmin(admin.ModelAdmin):
 
 @admin.register(Salary)
 class SalaryAdmin(admin.ModelAdmin):
-    save_on_top = True  # \"Зберегти\" buttons also at the top: no need to scroll down
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = ["period_month", "teacher", "lessons_count", "base_amount", "bonus", "total_amount", "paid_at"]
     list_filter = ["teacher", "period_month"]
     search_fields = ["teacher__last_name", "teacher__first_name"]

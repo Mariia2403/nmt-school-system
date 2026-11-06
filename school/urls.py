@@ -17,6 +17,8 @@ urlpatterns = [
     path("students/<int:pk>/payment/", views.student_payment, name="student_payment"),
     # Students with an overdue debt: the administrator calls their parents
     path("groups/", views.group_list, name="group_list"),
+    # Buttons of a contract in the student card: pause / resume / leave
+    path("contracts/<int:pk>/<str:action>/", views.contract_action, name="contract_action"),
     path("groups/<int:pk>/", views.group_detail, name="group_detail"),
     # Button on the group page: create lessons from the weekly schedule
     path("groups/<int:pk>/sync-lessons/", views.group_sync_lessons, name="group_sync_lessons"),

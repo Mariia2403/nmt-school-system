@@ -15,7 +15,7 @@ Some fields are calculated automatically if you leave them empty
 Note: do not name it _prepare() - Django already uses this name inside models.
 """
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -23,6 +23,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import F, Q, Sum
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 # Common settings for money and percent fields
@@ -56,6 +57,23 @@ def months_between(start, end):
 def money_round(value):
     """Round money to 2 digits after the point: 123.456 -> 123.46."""
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def last_day_of_month(value):
+    """Last day of the month: 2026-11-17 -> 2026-11-30."""
+    return next_month(value) - timedelta(days=1)
+
+
+def lessons_by_schedule(weekdays, from_day, to_day):
+    """How many lessons the weekly schedule gives between two days (both included).
+    weekdays = list of schedule weekdays, 1 = Monday ... 7 = Sunday (one item per lesson).
+    Example: [1, 4] (Monday and Thursday), 01.11.2026 .. 15.11.2026 -> 4 lessons."""
+    count = 0
+    day = from_day
+    while day <= to_day:
+        count += weekdays.count(day.isoweekday())
+        day += timedelta(days=1)
+    return count
 
 
 # ───────────────────────── Reference data ─────────────────────────
@@ -311,26 +329,36 @@ class StudyGroup(models.Model):
         - the group end date = on_day -> the group goes out of the "Навчаються" list;
         - open contracts (active, on pause) get status "Завершений" and end on on_day;
           invoices WITHOUT payments for months after on_day are deleted (Contract.save does it).
-          The month of on_day stays: a month with at least one lesson is paid in full;
+          The month of on_day is billed only for its lessons until on_day;
+          if parents already paid for lessons after on_day -> a refund request is created;
         - planned future lessons without marks are deleted.
         Money, held lessons, attendance and test results stay: this is history.
-        Returns (contracts_finished, lessons_removed)."""
+        Returns (contracts_finished, lessons_removed, refunds_total)."""
         self.end_date = on_day
         self.save()  # contracts with a later end date move to on_day (update_contract_dates)
 
         finished = 0
+        refunds_total = Decimal("0")
         for contract in self.contracts.filter(status__in=Contract.OPEN_STATUSES):
+            pause = contract.open_pause()
+            if pause is not None:  # a pause ends together with the group
+                if pause.start_date > on_day:
+                    pause.delete()
+                else:
+                    pause.end_date = on_day
+                    pause.save()
             contract.status = Contract.Status.COMPLETED
             if not contract.end_date or contract.end_date > on_day:
                 contract.end_date = on_day
             contract.save()
+            refunds_total += contract.settle_overpayment(Refund.Reason.EARLY_TERMINATION)
             finished += 1
 
         day_after = timezone.make_aware(datetime.combine(on_day + timedelta(days=1), datetime.min.time()))
         removed, _ = self.lessons.filter(
             starts_at__gte=day_after, status=Lesson.Status.PLANNED, attendance__isnull=True
         ).delete()
-        return finished, removed
+        return finished, removed, refunds_total
 
     def money_records_count(self):
         """How many payments and refunds are linked to this group.
@@ -1035,10 +1063,12 @@ class Contract(models.Model):
         # 1. The contract ends when the group ends (if nobody wrote another date)
         if self.end_date is None:
             self.end_date = self.group.end_date
-        # 2. Early termination: if the date is still in the future, the contract ends today
+        # 2. Early termination without its own date (only the status was changed, the end date
+        #    is still the end of the group) -> the contract ends today.
+        #    If the admin chose the last day ("Учень пішов"), we keep that date, also a future one.
         if self.status == self.Status.TERMINATED:
             today = timezone.localdate()
-            if self.end_date is None or self.end_date > today:
+            if self.end_date is None or (self.end_date == self.group.end_date and self.end_date > today):
                 self.end_date = max(today, self.start_date) if self.start_date else today
 
     def clean(self):
@@ -1084,13 +1114,96 @@ class Contract(models.Model):
     def save(self, *args, **kwargs):
         self._fill_defaults()
         super().save(*args, **kwargs)
-        # After every save the invoices follow the contract (dates, plan, discount)
+        # The status and the pauses must agree (for example, the status was changed in the admin)
+        self._sync_pause_with_status()
+        # After every save the invoices follow the contract (dates, plan, discount, pauses)
         self.sync_invoices()
+
+    # ───── Pauses ─────
+
+    def open_pause(self):
+        """The pause that is going on now (without an end date), or None."""
+        return self.pauses.filter(end_date__isnull=True).first()
+
+    def _sync_pause_with_status(self):
+        """If somebody changes only the status (for example, in the admin), we keep pauses right:
+        - status "Призупинений" without an open pause -> a pause starts today;
+        - another status, but a pause is still open -> the pause ends yesterday
+          (or it is deleted if it started today or later)."""
+        today = timezone.localdate()
+        pause = self.open_pause()
+        if self.status == self.Status.SUSPENDED and pause is None:
+            ContractPause.objects.create(contract=self, start_date=max(today, self.start_date))
+        elif self.status != self.Status.SUSPENDED and pause is not None:
+            if pause.start_date >= today:
+                pause.delete()
+            else:
+                pause.end_date = today - timedelta(days=1)
+                pause.save()
+
+    def pause(self, from_day, reason=""):
+        """Put the contract on pause from from_day (the first day without lessons).
+        The months of the pause are not billed; a month where the pause starts
+        is billed only for the lessons before the pause.
+        Returns the refund amount (if parents already paid for the pause time)."""
+        if self.status != self.Status.ACTIVE:
+            raise ValidationError("На паузу можна поставити лише діючий договір.")
+        if from_day < self.start_date or (self.end_date and from_day > self.end_date):
+            raise ValidationError("Дата паузи має бути в межах договору.")
+        ContractPause.objects.create(contract=self, start_date=from_day, reason=reason)
+        self.status = self.Status.SUSPENDED
+        self.save()
+        return self.settle_overpayment(Refund.Reason.OVERPAYMENT)
+
+    def resume(self, on_day):
+        """The student comes back: on_day is the first day of lessons after the pause.
+        Invoices for the next months appear again; months already paid before the pause
+        stay paid (their waiting refund requests are made smaller)."""
+        pause = self.open_pause()
+        if self.status != self.Status.SUSPENDED or pause is None:
+            raise ValidationError("Цей договір не на паузі.")
+        if on_day <= pause.start_date:
+            pause.delete()  # the pause did not really happen
+        else:
+            pause.end_date = on_day - timedelta(days=1)
+            pause.save()
+        self.status = self.Status.ACTIVE
+        self.save()
+        # The months after the return need money again: waiting refund requests may shrink
+        self.settle_overpayment(Refund.Reason.OVERPAYMENT)
+
+    def terminate(self, last_day):
+        """The student left: last_day is the last day of studying.
+        Unpaid invoices after it disappear, the last month is billed only for its lessons,
+        extra money that parents already paid becomes a refund request.
+        Returns the refund amount."""
+        if self.status not in self.OPEN_STATUSES:
+            raise ValidationError("Договір уже завершено або розірвано.")
+        if last_day < self.start_date:
+            raise ValidationError(f"Договір почався {self.start_date:%d.%m.%Y}.")
+        pause = self.open_pause()
+        if pause is not None:
+            if pause.start_date > last_day:
+                pause.delete()
+            else:
+                pause.end_date = last_day
+                pause.save()
+        self.status = self.Status.TERMINATED
+        self.end_date = last_day
+        self.save()
+        return self.settle_overpayment(Refund.Reason.EARLY_TERMINATION)
+
+    # ───── Money plan ─────
 
     def monthly_amount(self):
         """Price for one month with the discount."""
         price = self.tariff.monthly_price
         return money_round(price * (Decimal("100") - self.discount_pct) / Decimal("100"))
+
+    def lesson_price(self):
+        """Price of one lesson = month price / lessons per month in the tariff.
+        Example: 2000 grn and 4 lessons -> 500 grn."""
+        return self.monthly_amount() / max(self.tariff.lessons_per_month, 1)
 
     def study_months(self):
         """All months of studying: from the start month to the end month.
@@ -1098,17 +1211,113 @@ class Contract(models.Model):
         last_day = self.end_date or max(timezone.localdate(), self.start_date)
         return months_between(self.start_date, last_day)
 
+    def study_periods(self):
+        """Days when the student really studies: from the start to the end, WITHOUT pauses.
+        Returns a list of (first_day, last_day).
+        Example: 07.09..31.05 with a pause 15.11..31.12 ->
+                 [(07.09, 14.11), (01.01, 31.05)]"""
+        end = self.end_date or last_day_of_month(max(timezone.localdate(), self.start_date))
+        periods = [(self.start_date, end)]
+        if not self.pk:
+            return periods
+        for pause in self.pauses.all():
+            pause_end = pause.end_date or date.max
+            new_periods = []
+            for first, last in periods:
+                if pause_end < first or pause.start_date > last:
+                    new_periods.append((first, last))  # the pause does not touch this period
+                    continue
+                if first < pause.start_date:
+                    new_periods.append((first, pause.start_date - timedelta(days=1)))
+                if pause_end < last:
+                    new_periods.append((pause_end + timedelta(days=1), last))
+            periods = new_periods
+        return periods
+
+    def month_charge(self, month, periods, weekdays):
+        """How much to pay for one month: (amount, first study day) or None (nothing to pay).
+
+        - the student studies the WHOLE month -> the full month price;
+        - only a part of the month (start, pause, early end) -> only the lessons
+          by schedule in the study days: lessons x lesson price, but not more than the month price.
+        Example: 2000 grn / 4 lessons, the pause starts after 2 lessons -> 1000 grn."""
+        month_end = last_day_of_month(month)
+        parts = [
+            (max(first, month), min(last, month_end))
+            for first, last in periods
+            if first <= month_end and last >= month
+        ]
+        if not parts:
+            return None  # the whole month is a pause (or outside the contract)
+        monthly = self.monthly_amount()
+        if parts == [(month, month_end)] or not weekdays:
+            # Whole month, or the group has no schedule (we cannot count lessons) -> full price
+            return monthly, parts[0][0]
+        lessons = sum(lessons_by_schedule(weekdays, first, last) for first, last in parts)
+        if lessons == 0:
+            return None
+        return min(monthly, money_round(self.lesson_price() * lessons)), parts[0][0]
+
     def planned_invoices(self):
         """The invoice plan for this contract: {month: (amount, due date)}.
 
-        Monthly: one invoice for every month, pay before the 1st day of the month
-                 (the first month: not earlier than the start of studying).
-        Prepaid: one invoice for the whole course, pay before the start of studying."""
-        months = self.study_months()
+        Monthly: one invoice for every month with lessons; pay before the 1st day of the month
+                 (or before the first lesson day, if the student starts later in the month).
+        Prepaid: one invoice for the whole course (sum of all months), pay before the start.
+        Months of a pause have no invoice; cut months are billed by lessons (see month_charge)."""
+        periods = self.study_periods()
+        weekdays = list(GroupSchedule.objects.filter(group_id=self.group_id).values_list("weekday", flat=True))
+        charges = {}
+        for month in self.study_months():
+            charge = self.month_charge(month, periods, weekdays)
+            if charge:
+                charges[month] = charge
+        if not charges:
+            return {}
         if self.payment_plan == self.PaymentPlan.PREPAID:
-            total = self.monthly_amount() * len(months)
-            return {months[0]: (total, self.start_date)}
-        return {month: (self.monthly_amount(), max(month, self.start_date)) for month in months}
+            total = sum(amount for amount, _ in charges.values())
+            return {min(charges): (total, self.start_date)}
+        return {month: (amount, first_day) for month, (amount, first_day) in charges.items()}
+
+    def settle_overpayment(self, reason):
+        """If parents paid more than the plan needs now (pause, early end, group finished),
+        create ONE refund request "Очікує розгляду" for the extra money.
+        It is safe to call many times: refunds that already exist (not rejected) are counted.
+        If the plan needs MORE money again (the student came back after a pause), requests that
+        still wait ("Очікує розгляду") become smaller or disappear. Approved and paid ones stay.
+        Returns the amount of the new refund (0 if nothing to return)."""
+        plan = self.planned_invoices()
+        extra = Decimal("0")
+        for inv in self.invoices.annotate(paid=Coalesce(Sum("payments__amount"), Decimal("0"))):
+            needed = plan.get(inv.period_month, (Decimal("0"), None))[0]
+            if inv.paid > needed:
+                extra += inv.paid - needed
+        already = self.refunds.filter(
+            reason__in=[Refund.Reason.OVERPAYMENT, Refund.Reason.EARLY_TERMINATION]
+        ).exclude(status=Refund.Status.REJECTED).aggregate(s=Coalesce(Sum("amount"), Decimal("0")))["s"]
+        rest = extra - already
+        if rest < 0:
+            # Too much is waiting to be returned: make the newest waiting requests smaller
+            too_much = -rest
+            waiting = self.refunds.filter(
+                reason__in=[Refund.Reason.OVERPAYMENT, Refund.Reason.EARLY_TERMINATION],
+                status=Refund.Status.PENDING,
+            ).order_by("-created_at", "-pk")
+            for refund in waiting:
+                if too_much <= 0:
+                    break
+                if refund.amount <= too_much:
+                    too_much -= refund.amount
+                    refund.delete()
+                else:
+                    refund.amount -= too_much
+                    refund.save(update_fields=["amount"])
+                    too_much = Decimal("0")
+            return Decimal("0")
+        if rest == 0:
+            return Decimal("0")
+        Refund.objects.create(contract=self, reason=reason, amount=rest)
+        return rest
 
     def sync_invoices(self):
         """Make the invoices of this contract match the plan.
@@ -1118,15 +1327,30 @@ class Contract(models.Model):
           (for example, the discount changed);
         - deletes invoices WITHOUT payments that are not in the plan anymore
           (for example, the contract was terminated in December -> January..May are not needed).
-        Invoices that already have payments are never changed: this is real money.
+        Invoices with payments: the payments are real money, we never change them.
+        We only make the invoice SMALLER if the plan now needs less (pause, early end),
+        but never smaller than what is already paid. Extra paid money -> settle_overpayment().
+        Example: invoice 2000, paid 600, the plan needs 1000 now -> invoice 1000, debt 400.
         Returns (created, updated, deleted)."""
         plan = self.planned_invoices()
         created = updated = deleted = 0
-        existing = {inv.period_month: inv for inv in self.invoices.annotate(pay_count=models.Count("payments"))}
+        existing = {
+            inv.period_month: inv
+            for inv in self.invoices.annotate(
+                pay_count=models.Count("payments"),
+                paid=Coalesce(Sum("payments__amount"), Decimal("0")),
+            )
+        }
 
         for month, inv in existing.items():
             if inv.pay_count:
-                continue  # it has payments: do not touch
+                needed = plan.get(month, (Decimal("0"), None))[0]
+                new_amount = max(needed, inv.paid)
+                if new_amount < inv.amount:
+                    inv.amount = new_amount
+                    inv.save(update_fields=["amount"])
+                    updated += 1
+                continue  # never bigger, never deleted: it has payments
             if month not in plan:
                 inv.delete()
                 deleted += 1
@@ -1142,6 +1366,58 @@ class Contract(models.Model):
                 Invoice.objects.create(contract=self, period_month=month, amount=amount, due_date=due)
                 created += 1
         return created, updated, deleted
+
+
+class ContractPause(models.Model):
+    """A pause in studying: the student does not come and does not pay for these days,
+    but keeps the place in the group. A contract can have many pauses (history).
+    end_date is empty while the pause is going on."""
+
+    # CASCADE: a pause is not money, it can go together with a contract created by mistake
+    contract = models.ForeignKey(
+        Contract, on_delete=models.CASCADE, related_name="pauses", verbose_name="Договір"
+    )
+    start_date = models.DateField("Пауза з", help_text="Перший день без занять")
+    end_date = models.DateField(
+        "Пауза до (включно)", null=True, blank=True,
+        help_text="Останній день паузи. Порожньо — пауза ще триває.",
+    )
+    reason = models.CharField("Причина", max_length=200, blank=True)
+    created_at = models.DateTimeField("Створено", auto_now_add=True)
+
+    class Meta:
+        db_table = "contract_pauses"
+        verbose_name = "Пауза"
+        verbose_name_plural = "Паузи"
+        ordering = ["start_date"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(end_date__isnull=True) | Q(end_date__gte=F("start_date")),
+                name="contract_pauses_end_after_start",
+                violation_error_message="Кінець паузи не може бути раніше її початку.",
+            ),
+            # Only one pause that is going on now (without an end) for one contract
+            models.UniqueConstraint(
+                fields=["contract"],
+                condition=Q(end_date__isnull=True),
+                name="contract_pauses_one_open",
+                violation_error_message="У договору вже є пауза, яка триває.",
+            ),
+        ]
+
+    def __str__(self):
+        end = f"{self.end_date:%d.%m.%Y}" if self.end_date else "триває"
+        return f"Пауза {self.start_date:%d.%m.%Y} — {end}"
+
+    def clean(self):
+        # Two pauses of one contract must not overlap: the same day cannot be counted twice
+        if not self.contract_id or not self.start_date:
+            return
+        my_end = self.end_date or date.max
+        for other in ContractPause.objects.filter(contract_id=self.contract_id).exclude(pk=self.pk):
+            other_end = other.end_date or date.max
+            if self.start_date <= other_end and other.start_date <= my_end:
+                raise ValidationError(f"Ця пауза перетинається з іншою: {other}.")
 
 
 class Invoice(models.Model):

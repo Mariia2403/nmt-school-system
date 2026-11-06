@@ -22,7 +22,7 @@ from .access import (
     get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
 )
 from .models import (
-    Attendance, Contract, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
+    Attendance, Contract, ContractPause, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
     Teacher, Test, TestResult, months_between, next_month,
 )
 
@@ -277,7 +277,8 @@ def student_detail(request, pk):
         student.contracts
         .filter(group__in=my_groups)  # a teacher sees only contracts in his groups
         .select_related("group__subject", "group__teacher", "tariff")
-        .prefetch_related("group__schedule")
+        # pauses and refund requests are shown under every contract
+        .prefetch_related("group__schedule", "pauses", "refunds")
         .order_by("-start_date")
     )
 
@@ -334,8 +335,54 @@ def student_detail(request, pk):
         "overdue_debt": overdue_debt,
         "unpaid_total": unpaid_total,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
+        "today": today,  # default date in the pause / leave forms
     }
     return render(request, "school/student_detail.html", context)
+
+
+@admin_page
+def contract_action(request, pk, action):
+    """Buttons of a contract in the student card (only POST):
+    pause  - "Поставити на паузу" (first day without lessons + reason),
+    resume - "Повернути з паузи" (first day of lessons after the pause),
+    leave  - "Учень пішов" (last day of studying).
+    The money is recalculated in the model (Contract.pause / resume / terminate)."""
+    contract = get_object_or_404(Contract.objects.select_related("student", "group"), pk=pk)
+    back = redirect("school:student_detail", pk=contract.student_id)
+    if request.method != "POST":
+        return back
+
+    try:
+        day = date.fromisoformat(request.POST.get("day", ""))
+    except ValueError:
+        messages.error(request, "Вкажіть дату.")
+        return back
+
+    group = contract.group.full_name
+    try:
+        with transaction.atomic():  # all changes or nothing
+            if action == "pause":
+                refund = contract.pause(day, request.POST.get("reason", "").strip()[:200])
+                text = f"«{group}»: пауза з {day:%d.%m.%Y}. Рахунки за місяці паузи не створюються."
+            elif action == "resume":
+                contract.resume(day)
+                refund = 0
+                text = f"«{group}»: учень повертається {day:%d.%m.%Y}. Рахунки на наступні місяці створено."
+            elif action == "leave":
+                refund = contract.terminate(day)
+                text = (f"«{group}»: договір розірвано, останній день — {day:%d.%m.%Y}. "
+                        "Неоплачені рахунки після цієї дати прибрано.")
+            else:
+                return back
+    except ValidationError as error:
+        messages.error(request, " ".join(error.messages))
+        return back
+
+    if refund:
+        text += (f" Батьки вже заплатили за заняття, яких не буде, — створено заявку на повернення "
+                 f"{refund:.0f} грн («Очікує розгляду», Фінанси → Повернення).")
+    messages.success(request, text)
+    return back
 
 
 # Colors of subjects on the chart: very different colors, so lines are easy to tell apart
@@ -607,12 +654,15 @@ def group_finish(request, pk):
         return redirect("school:group_detail", pk=group.pk)
 
     with transaction.atomic():  # all changes or nothing
-        finished, removed = group.finish(on_day)
-    messages.success(
-        request,
+        finished, removed, refunds_total = group.finish(on_day)
+    text = (
         f"Групу завершено {on_day:%d.%m.%Y}. Договорів завершено: {finished}, "
-        f"майбутніх занять прибрано: {removed}. Оплати, борги й журнал збережено.",
+        f"майбутніх занять прибрано: {removed}. Оплати, борги й журнал збережено."
     )
+    if refunds_total:
+        text += (f" Батьки вже заплатили за заняття після цієї дати — створено заявки на повернення "
+                 f"на {refunds_total:.0f} грн (Фінанси → Повернення).")
+    messages.success(request, text)
     return redirect("school:group_detail", pk=group.pk)
 
 
@@ -667,11 +717,15 @@ def lesson_students(lesson):
     (suspended students do not come), plus anybody who already has a mark
     (so old marks never disappear from the form)."""
     day = timezone.localtime(lesson.starts_at).date()
+    # A pause that covers the lesson day: such a student does not come to this lesson
+    on_pause = ContractPause.objects.filter(
+        contract=OuterRef("pk"), start_date__lte=day
+    ).filter(Q(end_date__isnull=True) | Q(end_date__gte=day))
     ids = set(
         Contract.objects
         .filter(group_id=lesson.group_id, start_date__lte=day)
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=day))
-        .exclude(status=Contract.Status.SUSPENDED)
+        .exclude(Exists(on_pause))
         .values_list("student_id", flat=True)
     )
     ids |= set(lesson.attendance.values_list("student_id", flat=True))
@@ -931,7 +985,12 @@ def finance(request):
     salaries = Salary.objects.filter(period_month=month).select_related("teacher").order_by("teacher__last_name")
     refunds = (
         Refund.objects
-        .filter(Q(created_at__gte=month, created_at__lt=end) | Q(paid_at__gte=month, paid_at__lt=end))
+        .filter(
+            Q(created_at__gte=month, created_at__lt=end)
+            | Q(paid_at__gte=month, paid_at__lt=end)
+            # Requests that still wait for a decision are shown in every month, so they are not forgotten
+            | Q(status__in=[Refund.Status.PENDING, Refund.Status.APPROVED])
+        )
         .select_related("contract__student")
         .order_by("-created_at")
     )
