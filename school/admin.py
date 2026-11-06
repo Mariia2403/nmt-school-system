@@ -10,7 +10,7 @@ For every model we set:
 from decimal import Decimal
 
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.forms.models import BaseInlineFormSet
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value
@@ -210,6 +210,23 @@ class StudyGroupAdmin(admin.ModelAdmin):
                 )
             )
         )
+
+    def save_related(self, request, form, formsets, change):
+        # The schedule (inline) is saved here, after the group itself.
+        # Only now we can create the lessons from the new schedule.
+        super().save_related(request, form, formsets, change)
+        group = form.instance
+        created, removed = group.sync_lessons_with_schedule()
+        if created or removed:
+            text = f"Заняття оновлено за розкладом (до {group.end_date:%d.%m.%Y}): створено {created}"
+            if removed:
+                text += f", прибрано {removed} запланованих, яких більше немає в розкладі"
+            self.message_user(request, text + ".")
+        elif not group.schedule.exists():
+            self.message_user(
+                request, "У групи ще немає розкладу — додайте дні й час, і заняття створяться самі.",
+                level=messages.WARNING,
+            )
 
     @admin.display(description="Група", ordering="subject__name")
     def full_name(self, obj):

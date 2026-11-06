@@ -16,9 +16,19 @@
     </span>
   </div>
   {% if is_school_admin %}
-    <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="btn btn-outline-primary btn-sm">
-      <i class="bi bi-pencil"></i> Редагувати групу і розклад
-    </a>
+    <div class="d-flex flex-wrap gap-2">
+      <!-- POST form: the button changes data, so it is not a simple link -->
+      <form method="post" action="{% url 'school:group_sync_lessons' group.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-success btn-sm"
+                title="Створити заняття до кінця групи за тижневим розкладом. Відмічені заняття не змінюються.">
+          <i class="bi bi-calendar-plus"></i> Оновити заняття за розкладом
+        </button>
+      </form>
+      <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="btn btn-outline-primary btn-sm">
+        <i class="bi bi-pencil"></i> Редагувати групу і розклад
+      </a>
+    </div>
   {% endif %}
 </div>
 
@@ -32,7 +42,10 @@
           {% for slot in group.schedule.all %}
             <li><strong>{{ slot.get_weekday_display }}</strong> {{ slot.start_time|time:"H:i" }}–{{ slot.end_time|time:"H:i" }}</li>
           {% empty %}
-            <li class="text-danger small">Розклад не задано</li>
+            <li class="text-danger small">
+              Розклад не задано
+              {% if is_school_admin %}— <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="text-danger">задати</a>{% endif %}
+            </li>
           {% endfor %}
         </ul>
       </div>
@@ -159,7 +172,18 @@
             {% endif %}
           </li>
         {% empty %}
-          <li class="list-group-item text-muted">Запланованих занять немає.</li>
+          <li class="list-group-item text-muted">
+            Запланованих занять немає.
+            {% if is_school_admin %}
+              <div class="small">
+                {% if group.schedule.all %}
+                  Натисніть «Оновити заняття за розкладом» угорі — заняття створяться до {{ group.end_date|date:"d.m.Y"|default:"кінця групи" }}.
+                {% else %}
+                  Спершу задайте розклад: «Редагувати групу і розклад».
+                {% endif %}
+              </div>
+            {% endif %}
+          </li>
         {% endfor %}
       </ul>
     </div>

@@ -18,6 +18,8 @@ urlpatterns = [
     # Students with an overdue debt: the administrator calls their parents
     path("groups/", views.group_list, name="group_list"),
     path("groups/<int:pk>/", views.group_detail, name="group_detail"),
+    # Button on the group page: create lessons from the weekly schedule
+    path("groups/<int:pk>/sync-lessons/", views.group_sync_lessons, name="group_sync_lessons"),
     # Journal: lessons of one day (?date=2026-10-30) and the attendance form of one lesson
     path("journal/", views.journal, name="journal"),
     path("journal/lesson/<int:pk>/", views.journal_lesson, name="journal_lesson"),

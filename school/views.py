@@ -550,6 +550,30 @@ def group_detail(request, pk):
     return render(request, "school/group_detail.html", context)
 
 
+@admin_page
+def group_sync_lessons(request, pk):
+    """Button "Оновити заняття за розкладом" on the group page (only POST).
+    Creates the missing lessons until the end of the group and removes planned lessons
+    that are not in the schedule anymore. Marked and held lessons are never touched."""
+    group = get_object_or_404(StudyGroup, pk=pk)
+    if request.method == "POST":
+        if not group.end_date:
+            messages.error(request, "Спершу вкажіть дату завершення групи («Редагувати групу і розклад»).")
+        elif not group.schedule.exists():
+            messages.error(request, "У групи немає розкладу. Додайте дні й час у «Редагувати групу і розклад».")
+        else:
+            created, removed = group.sync_lessons_with_schedule()
+            if created or removed:
+                text = f"Заняття оновлено: створено {created}"
+                if removed:
+                    text += f", прибрано {removed} (їх більше немає в розкладі)"
+                messages.success(request, text + f". Заняття заплановано до {group.end_date:%d.%m.%Y}.")
+            else:
+                messages.info(request, "Усі заняття вже відповідають розкладу — нічого змінювати не треба.")
+    # Post/Redirect/Get: F5 after the button does not repeat the action
+    return redirect("school:group_detail", pk=group.pk)
+
+
 # ───────────────────────── Journal ─────────────────────────
 
 # Buttons in the journal: (value, short text, Bootstrap color)

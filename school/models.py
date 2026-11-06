@@ -15,7 +15,7 @@ Some fields are calculated automatically if you leave them empty
 Note: do not name it _prepare() - Django already uses this name inside models.
 """
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
@@ -214,6 +214,82 @@ class StudyGroup(models.Model):
             by_time.setdefault((slot.start_time, slot.end_time), []).append(slot.short_day)
         parts = [f"{', '.join(days)} {start:%H:%M}–{end:%H:%M}" for (start, end), days in by_time.items()]
         return "; ".join(parts)
+
+    def clean(self):
+        # Without the end date we do not know how many months to bill:
+        # monthly invoices would stop at the current month and nobody would get new invoices.
+        if not self.end_date:
+            raise ValidationError({
+                "end_date": "Вкажіть дату завершення групи: без неї система не знає, "
+                            "за скільки місяців виставляти рахунки і до якого дня створювати заняття."
+            })
+
+    def save(self, *args, **kwargs):
+        # Remember the old end date to move the contracts together with the group
+        old_end = None
+        if self.pk:
+            old_end = StudyGroup.objects.filter(pk=self.pk).values_list("end_date", flat=True).first()
+        super().save(*args, **kwargs)
+        if self.pk and old_end != self.end_date:
+            self.update_contract_dates(old_end)
+
+    def update_contract_dates(self, old_end):
+        """The group end date changed -> open contracts follow it.
+        A contract follows if it ended together with the group (old date)
+        or if it now ends later than the group. Invoices are updated in Contract.save().
+        Example: the group was extended from 31.05 to 30.06 -> students get an invoice for June.
+        Returns how many contracts changed."""
+        if not self.end_date:
+            return 0
+        changed = 0
+        contracts = self.contracts.filter(status__in=Contract.OPEN_STATUSES)
+        for contract in contracts:
+            if contract.end_date == old_end or (contract.end_date and contract.end_date > self.end_date):
+                contract.end_date = self.end_date
+                contract.save()  # save() also updates the invoices
+                changed += 1
+        return changed
+
+    def sync_lessons_with_schedule(self, from_day=None):
+        """Make the future lessons match the weekly schedule,
+        from from_day (default: today or the group start, if it is later) until the end of the group.
+
+        1. Creates the missing planned lessons. If a lesson at this date and time already exists
+           (any status, also "cancelled"), it is skipped, so it is safe to run many times.
+        2. Deletes future lessons that are not in the schedule anymore (for example, Monday was
+           changed to Tuesday), but ONLY planned lessons without marks. Held, cancelled and
+           marked lessons are history, we never delete them.
+        Returns (created, removed)."""
+        if not self.end_date:
+            return 0, 0
+        # A fresh query, not self.schedule.all(): the admin loads the group with prefetch_related,
+        # so self.schedule.all() can still keep the OLD schedule in memory
+        slots = list(GroupSchedule.objects.filter(group=self))
+        slot_keys ={(slot.weekday, slot.start_time) for slot in slots}
+        now = timezone.now()
+
+        # 2. Remove planned future lessons that do not fit the schedule
+        removed = 0
+        for lesson in self.lessons.filter(starts_at__gt=now, status=Lesson.Status.PLANNED, attendance__isnull=True):
+            local = timezone.localtime(lesson.starts_at)
+            if (local.isoweekday(), local.time()) not in slot_keys:
+                lesson.delete()
+                removed += 1
+
+        # 1. Create the missing lessons
+        day = max(from_day or timezone.localdate(), self.start_date)
+        existing = set(self.lessons.values_list("starts_at", flat=True))
+        new_lessons = []
+        while day <= self.end_date:
+            for slot in slots:
+                if slot.weekday == day.isoweekday():  # Monday = 1, like in the table
+                    starts_at = timezone.make_aware(datetime.combine(day, slot.start_time))
+                    if starts_at > now and starts_at not in existing:
+                        new_lessons.append(Lesson(group=self, teacher_id=self.teacher_id, starts_at=starts_at))
+            day += timedelta(days=1)
+        # bulk_create: one INSERT for all lessons (we set the teacher ourselves, save() is not called)
+        Lesson.objects.bulk_create(new_lessons)
+        return len(new_lessons), removed
 
     def current_students(self):
         """Students of the group = students with an active contract for this group."""
