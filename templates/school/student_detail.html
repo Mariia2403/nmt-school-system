@@ -21,7 +21,11 @@
   </div>
   {% if is_office %}
     <!-- Every button only for roles that may do it (access.ROLE_ABILITIES) -->
-    <div class="d-flex gap-2">
+    <div class="d-flex flex-wrap gap-2">
+      <!-- A document for the parents: certificate (course finished) or reference (still studies / left) -->
+      <a href="{% url 'school:student_certificate' student.pk %}" class="btn btn-outline-secondary btn-sm" target="_blank">
+        <i class="bi bi-award"></i> Сертифікат / довідка
+      </a>
       {% if can.payments %}
         <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-success btn-sm">
           <i class="bi bi-cash-coin"></i> Внести оплату

@@ -24,6 +24,8 @@ urlpatterns = [
     path("students/<int:pk>/", views.student_detail, name="student_detail"),
     # The administrator enters money from parents; the system splits it between invoices
     path("students/<int:pk>/payment/", views.student_payment, name="student_payment"),
+    # "Сертифікат" (all subjects finished) or "Довідка про навчання": a page to print or save as PDF
+    path("students/<int:pk>/certificate/", views.student_certificate, name="student_certificate"),
     # Students with an overdue debt: the administrator calls their parents
     path("groups/", views.group_list, name="group_list"),
     # Buttons of a contract in the student card: pause / resume / leave

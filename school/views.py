@@ -444,6 +444,83 @@ def student_detail(request, pk):
     return render(request, "school/student_detail.html", context)
 
 
+# ───────────────────────── Certificate / reference ─────────────────────────
+
+def subject_results(student, contract):
+    """Results of one contract (one subject) for the certificate:
+    attendance in this group, NMT scores of the subject (first, last, best, growth),
+    the average percent of topic tests and the guarantee of the tariff."""
+    marks = Attendance.objects.filter(student=student, lesson__group=contract.group)
+    total = marks.count()
+    present = marks.filter(status__in=[Attendance.Status.PRESENT, Attendance.Status.LATE]).count()
+
+    # Tests of this subject while the student studied it (the group test or a school-wide one)
+    tests = TestResult.objects.filter(student=student, test__subject_id=contract.group.subject_id)
+    nmt = list(
+        tests.filter(test__kind__in=Test.NMT_SCALE_KINDS, score__isnull=False)
+        .select_related("test").order_by("test__held_at", "test__pk")
+    )
+    topic_avg = tests.exclude(test__kind__in=Test.NMT_SCALE_KINDS).aggregate(avg=Avg("score"))["avg"]
+
+    first = nmt[0] if nmt else None
+    last = nmt[-1] if nmt else None
+    best = max(nmt, key=lambda r: r.score) if nmt else None
+    # The real NMT result (if the admin entered it) is more important than the trial tests
+    final = contract.final_nmt_score
+    guarantee = contract.tariff.guarantee_min_score if contract.tariff.has_guarantee else None
+    check = final if final is not None else (best.score if best else None)
+    return {
+        "contract": contract,
+        "attended": present,
+        "marked": total,
+        "attendance_pct": round(present * 100 / total) if total else None,
+        "first": first,
+        "last": last,
+        "best": best,
+        "growth": (last.score - first.score) if first and last and first is not last else None,
+        "tests_count": len(nmt),
+        "topic_avg": topic_avg,
+        "final": final,
+        "guarantee": guarantee,
+        "guarantee_met": (check >= guarantee) if guarantee and check is not None else None,
+    }
+
+
+@role_page("office")
+def student_certificate(request, pk):
+    """A document for the parents (one A4 page, the browser prints it or saves it as PDF):
+    - "Сертифікат про проходження курсу" - every subject is finished (contract "Завершений");
+    - "Довідка про навчання" - the student left in the middle or still studies.
+    One document per student, one row per subject. Everything comes from the data,
+    nothing is typed by hand and nothing is saved: the page is built when it is opened."""
+    student = get_object_or_404(Student, pk=pk)
+    today = timezone.localdate()
+    contracts = list(
+        student.contracts.filter(start_date__lte=today)
+        .select_related("group__subject", "group__teacher", "tariff")
+        .order_by("group__subject__name", "start_date")
+    )
+    if not contracts:
+        messages.error(request, "Учень ще не почав навчання — документ поки нічого не покаже.")
+        return redirect("school:student_detail", pk=student.pk)
+
+    rows = [subject_results(student, c) for c in contracts]
+    finished = all(c.status == Contract.Status.COMPLETED for c in contracts)
+    context = {
+        "student": student,
+        "rows": rows,
+        "is_certificate": finished,
+        "title": "Сертифікат про проходження курсу підготовки до НМТ" if finished else "Довідка про навчання",
+        "today": today,
+        "start": min(c.start_date for c in contracts),
+        "end": max((c.end_date for c in contracts if c.end_date), default=None),
+        # A number that is easy to check: the student id and the date of the document
+        "number": f"НМТ-{today:%Y%m%d}-{student.pk:05d}",
+        "school_name": getattr(settings, "SCHOOL_NAME", "Школа підготовки до НМТ"),
+    }
+    return render(request, "school/student_certificate.html", context)
+
+
 def enrollment_summary(contracts):
     """Short text about new contracts for the success message:
     "Математика · група 1 (Стандарт, 2 400 ₴/міс)" or
