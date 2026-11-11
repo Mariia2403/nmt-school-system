@@ -97,13 +97,39 @@
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="4" class="text-muted">Викладачів ще немає. Додайте їх в адмінці.</td></tr>
+          <tr><td colspan="4" class="text-muted">Викладачів ще немає. Додайте першого у формі «Новий викладач» нижче.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
   <div class="card-footer bg-white small text-muted">
     «Вимкнути доступ» безпечніше, ніж видаляти логін: викладач більше не ввійде, але історія журналу залишиться.
+  </div>
+</div>
+
+<!-- New teacher: the record and (if a password is given) the login in one form -->
+<div class="card shadow-sm mb-4" id="new-teacher">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-person-plus"></i> Новий викладач</div>
+  <div class="card-body">
+    <form method="post" action="#new-teacher" class="row g-2" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="create_teacher">
+      {% if teacher_form.non_field_errors %}
+        <div class="col-12"><div class="alert alert-danger py-2 small mb-1">{{ teacher_form.non_field_errors|join:" " }}</div></div>
+      {% endif %}
+      {% for field in teacher_form %}
+        <div class="col-sm-6 col-lg-{% if field.name == 'rate_per_lesson' %}2{% elif field.name == 'phone' %}2{% else %}4{% endif %}">
+          <label class="form-label small text-muted mb-1" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% for e in field.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
+          {% if field.help_text and field.name in "username password" %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+        </div>
+      {% endfor %}
+      <div class="col-12">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus"></i> Додати викладача</button>
+        <span class="small text-muted ms-2">Групи викладачу призначають у формі групи («Редагувати групу і розклад»).</span>
+      </div>
+    </form>
   </div>
 </div>
 

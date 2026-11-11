@@ -10,7 +10,7 @@
 <div class="d-flex justify-content-between align-items-start mt-2 mb-3">
   <div>
     <h1 class="h3 mb-1">{{ student.last_name }} {{ student.first_name }}</h1>
-    <span class="text-muted">{{ student.grade }} клас · зареєстрований {{ student.registered_at|date:"d.m.Y" }}</span>
+    <span class="text-muted">{{ student.grade_label }} · зареєстрований {{ student.registered_at|date:"d.m.Y" }}</span>
     {% if no_access %}
       <!-- The same rule as in the Journal: settings.ACCESS_BLOCK_DAYS -->
       <div class="alert alert-danger py-2 px-3 mt-2 mb-0 small">

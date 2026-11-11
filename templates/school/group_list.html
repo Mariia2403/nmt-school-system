@@ -88,7 +88,17 @@
       </a>
     </div>
   {% empty %}
-    <div class="col-12"><div class="alert alert-light border">Груп не знайдено.</div></div>
+    <div class="col-12">
+      <div class="alert alert-light border">
+        Груп не знайдено.
+        {% if can.schedule %}
+          <div class="small mt-1">
+            Нова група: <a href="{% url 'admin:school_studygroup_add' %}">«Додати групу»</a> → предмет, викладач, дати і розклад.
+            Заняття створяться з розкладу самі; потім — «Записати учня» на сторінці групи.
+          </div>
+        {% endif %}
+      </div>
+    </div>
   {% endfor %}
 </div>
 {% endblock %}

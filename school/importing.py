@@ -206,6 +206,12 @@ def form_errors(form):
     return [str(e) for errors in form.errors.values() for e in errors]
 
 
+def grade_value(text):
+    """The column "Клас": "11" -> "11"; empty or "випускник" -> "" (a graduate of past years)."""
+    text = str(text or "").strip()
+    return "" if text.lower().startswith("вип") else text
+
+
 def check_row(row, lookup, seen, taken):
     """Check one row. Returns a dict for the preview:
     status "ok" (will be added), "skip" (this student already exists) or "error".
@@ -214,7 +220,7 @@ def check_row(row, lookup, seen, taken):
     result = {"row": row["row"], "data": row, "status": "ok", "messages": [], "groups": []}
     student_form = StudentForm({
         "last_name": row.get("last_name", ""), "first_name": row.get("first_name", ""),
-        "grade": row.get("grade", ""), "phone": row.get("phone", ""),
+        "grade": grade_value(row.get("grade", "")), "phone": row.get("phone", ""),
         "parent_name": row.get("parent_name", ""), "parent_phone": row.get("parent_phone", ""),
     })
     if not student_form.is_valid():
@@ -289,8 +295,10 @@ def import_rows(rows):
             # One row = its own savepoint: if this row fails, the rows before it stay
             try:
                 with transaction.atomic():
-                    student_form = StudentForm({k: row.get(k, "") for k in
-                                                ("last_name", "first_name", "grade", "phone", "parent_name", "parent_phone")})
+                    student_data = {k: row.get(k, "") for k in
+                                    ("last_name", "first_name", "phone", "parent_name", "parent_phone")}
+                    student_data["grade"] = grade_value(row.get("grade", ""))
+                    student_form = StudentForm(student_data)
                     student_form.is_valid()
                     student = student_form.save()
                     enrolled = 0
@@ -339,7 +347,7 @@ def template_workbook():
     for tariff in lookup.tariffs.values():
         info.append([tariff.name, float(tariff.monthly_price), tariff.subjects_count])
     info.append([])
-    info.append(["Клас — число 1–11. Телефони — у будь-якому вигляді. Дата — 07.09.2026 (порожньо = сьогодні)."])
+    info.append(["Клас — число 1–11 (порожньо або «випускник» — випускник минулих років). Телефони — у будь-якому вигляді. Дата — 07.09.2026 (порожньо = сьогодні)."])
     info.append(["Рядок без групи — учень додається без запису в групу."])
     for row in (1, len(groups) + 3):
         for cell in info[row]:

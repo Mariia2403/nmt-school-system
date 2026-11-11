@@ -3,6 +3,7 @@ Forms of the website (not the admin).
 StudentForm    - data of a new student and parents.
 EnrollmentForm - "Записати в групу": one contract (group, tariff, plan, discount, start date).
 DebtCallForm   - "Записати дзвінок" on the page "До дзвінка".
+TeacherForm    - "Новий викладач" on the page "Доступ".
 Django forms check the data AND call the model checks (Contract.clean): free places,
 old tariff, start before the group, etc. So the rules are the same as in the admin.
 """
@@ -11,7 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Count, Q
 from django.utils import timezone
 
-from .models import Contract, DebtCall, Student, StudyGroup, Tariff, Test
+from .models import Contract, DebtCall, Student, StudyGroup, Tariff, Teacher, Test
 
 
 class BootstrapMixin:
@@ -31,7 +32,7 @@ class StudentForm(BootstrapMixin, forms.ModelForm):
         model = Student
         fields = ["last_name", "first_name", "grade", "phone", "parent_name", "parent_phone"]
         widgets = {
-            "grade": forms.NumberInput(attrs={"min": 1, "max": 11}),
+            "grade": forms.NumberInput(attrs={"min": 1, "max": 11, "placeholder": "випускник"}),
             "phone": forms.TextInput(attrs={"placeholder": "067 123 45 67", "inputmode": "tel"}),
             "parent_phone": forms.TextInput(attrs={"placeholder": "067 123 45 67", "inputmode": "tel"}),
             "parent_name": forms.TextInput(attrs={"placeholder": "Прізвище Ім'я По батькові"}),
@@ -290,3 +291,33 @@ class DebtCallForm(BootstrapMixin, forms.ModelForm):
         self.instance.user = user
         self.add_bootstrap()
         self.fields["result"].widget.attrs["class"] = "form-check-input"
+
+class TeacherForm(BootstrapMixin, forms.ModelForm):
+    """"Новий викладач" on the page "Доступ": the teacher and (if a password is given) his login.
+    Without a login the teacher still can be chosen for groups; the login can be added later."""
+
+    username = forms.CharField(label="Логін", required=False,
+                               help_text="Порожньо — система запропонує прізвище латиницею.")
+    password = forms.CharField(label="Пароль", required=False, widget=forms.PasswordInput(attrs={"autocomplete": "new-password"}),
+                               help_text="Порожньо — без логіну (можна створити пізніше в таблиці вище).")
+
+    class Meta:
+        model = Teacher
+        fields = ["last_name", "first_name", "phone", "rate_per_lesson"]
+        widgets = {
+            "phone": forms.TextInput(attrs={"placeholder": "067 123 45 67", "inputmode": "tel"}),
+            "rate_per_lesson": forms.NumberInput(attrs={"min": 0, "step": 10, "placeholder": "400"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_bootstrap()
+
+    def clean(self):
+        data = super().clean()
+        last, first = data.get("last_name"), data.get("first_name")
+        if last and first and Teacher.objects.filter(last_name__iexact=last.strip(), first_name__iexact=first.strip()).exists():
+            raise forms.ValidationError(f"Викладач {last} {first} уже є. Створіть йому логін у таблиці вище.")
+        if data.get("username") and not data.get("password"):
+            self.add_error("password", "Вкажіть пароль для логіну (або залиште порожнім і логін).")
+        return data

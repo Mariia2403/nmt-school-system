@@ -18,7 +18,7 @@
       <span class="badge text-bg-secondary ms-1">не навчається</span>
     {% endif %}
   </td>
-  <td>{{ student.grade }} кл.</td>
+  <td class="text-nowrap">{% if student.grade %}{{ student.grade }} кл.{% else %}<span class="text-muted">випускник</span>{% endif %}</td>
   <td class="text-nowrap">{{ student.phone|default:"—" }}</td>
   <td>
     <div>{{ student.parent_name|default:"—" }}</div>

@@ -83,7 +83,7 @@
             <tr class="{% if r.status == 'error' %}table-danger{% elif r.status == 'skip' %}text-muted{% endif %}">
               <td>{{ r.row }}</td>
               <td>{{ r.data.last_name }} {{ r.data.first_name }}</td>
-              <td>{{ r.data.grade }}</td>
+              <td>{{ r.data.grade|default:"випускник" }}</td>
               <td class="small">{{ r.data.parent_name }}<div class="text-muted">{{ r.data.parent_phone }}</div></td>
               <td class="small">
                 {% if r.status == "ok" %}<span class="badge text-bg-success">буде додано</span>

@@ -133,8 +133,11 @@ class Student(models.Model):
     last_name = models.CharField("Прізвище", max_length=50)
     first_name = models.CharField("Ім'я", max_length=50)
     phone = models.CharField("Телефон", max_length=20, blank=True)
+    # Empty = a graduate of past years (he does not study at school, but takes the NMT).
+    # The rule 1-11 in the database still works for filled values (NULL passes a CHECK).
     grade = models.IntegerField(
-        "Клас", validators=[MinValueValidator(1), MaxValueValidator(11)]
+        "Клас", null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(11)],
+        help_text="Порожньо — випускник минулих років.",
     )
     parent_name = models.CharField("ПІБ батьків", max_length=150, blank=True)
     parent_phone = models.CharField("Телефон батьків", max_length=20, blank=True)
@@ -176,6 +179,11 @@ class Student(models.Model):
 
     def __str__(self):
         return f"{self.last_name} {self.first_name}"
+
+    @property
+    def grade_label(self):
+        """"11 клас" or "випускник" (for pages and documents)."""
+        return f"{self.grade} клас" if self.grade else "випускник"
 
     @property
     def has_active_contract(self):

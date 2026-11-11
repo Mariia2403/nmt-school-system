@@ -22,7 +22,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from . import importing
-from .forms import DebtCallForm, EnrollmentForm, StudentForm, SwitchTariffForm, TestForm
+from .forms import DebtCallForm, EnrollmentForm, StudentForm, SwitchTariffForm, TeacherForm, TestForm
 from django.core.exceptions import PermissionDenied
 
 from .access import (
@@ -277,6 +277,8 @@ def student_list(request):
         students = students.filter(has_active=False, has_suspended=False)
     if grade.isdigit():
         students = students.filter(grade=int(grade))
+    elif grade == "graduate":
+        students = students.filter(grade__isnull=True)  # graduates of past years
 
     # Subject / group / tariff: the student has an OPEN contract with it
     contract_filter = Q()
@@ -349,7 +351,8 @@ def student_list(request):
         "groups": groups,
         "tariffs": Tariff.objects.all() if sees_money else Tariff.objects.none(),
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
-        "grades": students_for(request.user).values_list("grade", flat=True).distinct().order_by("grade"),
+        "grades": students_for(request.user).filter(grade__isnull=False)
+                  .values_list("grade", flat=True).distinct().order_by("grade"),
         "querystring": params.urlencode(),
         "today": today,
     }
@@ -1875,7 +1878,29 @@ def staff_accounts(request):
 
     User = get_user_model()
 
-    if request.method == "POST":
+    teacher_form = TeacherForm()
+    if request.method == "POST" and request.POST.get("action") == "create_teacher":
+        # "Новий викладач": the teacher and, if a password is given, his login - together or nothing
+        teacher_form = TeacherForm(request.POST)
+        if teacher_form.is_valid():
+            try:
+                with transaction.atomic():
+                    teacher = teacher_form.save()
+                    password = teacher_form.cleaned_data["password"]
+                    text = f"Викладача {teacher} додано."
+                    if password:
+                        user, _ = create_teacher_login(teacher, password, teacher_form.cleaned_data["username"], check=True)
+                        text += f" Логін «{user.username}» створено — передайте його викладачу разом з паролем."
+                    else:
+                        text += " Логіну поки немає: створіть його в таблиці, коли знадобиться."
+            except LoginError as error:
+                teacher_form.add_error(None, str(error))  # nothing is saved (atomic)
+            else:
+                messages.success(request, text)
+                return redirect("school:staff_accounts")
+        messages.error(request, "Викладача не додано — перевірте форму «Новий викладач».")
+
+    elif request.method == "POST":
         action = request.POST.get("action")
         password = request.POST.get("password", "")
         try:
@@ -1944,5 +1969,6 @@ def staff_accounts(request):
         "workers": workers,
         # For the select "Роль": (group name, label)
         "office_roles": [(name, ROLE_LABELS[code]) for name, code in OFFICE_ROLES.items()],
+        "teacher_form": teacher_form,
     }
     return render(request, "school/staff_accounts.html", context)

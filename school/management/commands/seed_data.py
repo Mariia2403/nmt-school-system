@@ -308,7 +308,8 @@ class Command(BaseCommand):
                 parent = f"{last_name} {random.choice(FATHER_NAMES)}"
             student = Student.objects.create(
                 last_name=last_name, first_name=first_name, phone=phone(),
-                grade=random.choice([10, 11, 11, 11, 11]),
+                # About 6% are graduates of past years: the class is empty
+                grade=None if random.random() < 0.06 else random.choice([10, 11, 11, 11, 11]),
                 parent_name=parent, parent_phone=phone(),
                 registered_at=self.year_start - timedelta(days=random.randint(0, 25)),
             )
