@@ -33,6 +33,8 @@
               <div class="small text-muted">
                 {{ lesson.topic|default:"без теми" }} · {{ lesson.teacher }}
                 {% if lesson.teacher_id != lesson.group.teacher_id %}<span class="text-warning">(заміна)</span>{% endif %}
+                {% if lesson.moved_from_id %}<span class="text-info">· перенесено з {{ lesson.moved_from.starts_at|date:"d.m H:i" }}</span>{% endif %}
+                {% if lesson.note %}<span>· {{ lesson.note }}</span>{% endif %}
               </div>
             </div>
             <div class="text-end">
@@ -40,7 +42,7 @@
                 <span class="badge text-bg-danger">не відмічено</span>
               {% elif lesson.marked %}
                 <span class="badge text-bg-success">присутні {{ lesson.present }} / {{ lesson.marked }}</span>
-              {% elif lesson.is_future %}
+              {% elif lesson.is_future and lesson.status == "planned" %}
                 <span class="badge text-bg-primary">{{ lesson.get_status_display }}</span>
               {% else %}
                 <span class="badge text-bg-secondary">{{ lesson.get_status_display }}</span>

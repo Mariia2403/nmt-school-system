@@ -1,0 +1,113 @@
+{% comment %}
+Block "Керування заняттям" on the lesson page (only for the administrator).
+Three small forms: cancel / move / another teacher. Every form sends POST to lesson_action.
+Included in journal_lesson.html.
+{% endcomment %}
+<div class="card shadow-sm mb-3">
+  <div class="card-header bg-white d-flex flex-wrap align-items-center gap-2">
+    <span class="fw-semibold me-auto"><i class="bi bi-sliders"></i> Керування заняттям</span>
+    {% if can_replace %}
+      <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#act-replace">
+        <i class="bi bi-person-gear"></i> Заміна викладача
+      </button>
+    {% endif %}
+    {% if can_move %}
+      <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#act-move">
+        <i class="bi bi-calendar-event"></i> Перенести
+      </button>
+    {% endif %}
+    {% if can_cancel %}
+      <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#act-cancel">
+        <i class="bi bi-x-circle"></i> Скасувати
+      </button>
+    {% endif %}
+  </div>
+
+  <div id="lesson-actions">
+    {% if can_replace %}
+      <!-- Another teacher gives this lesson. Busy teachers cannot be chosen. -->
+      <form method="post" action="{% url 'school:lesson_action' lesson.pk 'replace' %}"
+            class="collapse card-body border-top" id="act-replace" data-bs-parent="#lesson-actions">
+        {% csrf_token %}
+        <div class="row g-2 align-items-end">
+          <div class="col-md-8">
+            <label class="form-label small text-muted mb-1" for="teacher">Хто веде заняття замість {{ lesson.teacher }}</label>
+            <select name="teacher" id="teacher" class="form-select" required>
+              <option value="">— оберіть викладача —</option>
+              {% for t in substitutes %}
+                <option value="{{ t.pk }}" {% if t.busy %}disabled{% endif %}>
+                  {{ t }}{% if t.pk == lesson.group.teacher_id %} (викладач групи){% endif %}{% if t.busy %} — зайнятий{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <button type="submit" class="btn btn-primary w-100">Зберегти заміну</button>
+          </div>
+        </div>
+        <div class="form-text">
+          Спершу — викладачі цього предмета. Зайнятих у цей час обрати не можна.
+          Оплату за заняття отримає викладач, який його веде.
+        </div>
+        {% for t in substitutes %}{% if t.busy %}<div class="small text-muted">· {{ t.busy }}</div>{% endif %}{% endfor %}
+      </form>
+    {% endif %}
+
+    {% if can_move %}
+      <!-- Move: the old lesson stays as "Перенесене", a new lesson is created -->
+      <form method="post" action="{% url 'school:lesson_action' lesson.pk 'move' %}"
+            class="collapse card-body border-top" id="act-move" data-bs-parent="#lesson-actions">
+        {% csrf_token %}
+        <div class="row g-2 align-items-end">
+          <div class="col-6 col-md-3">
+            <label class="form-label small text-muted mb-1" for="move-day">Нова дата</label>
+            <input type="date" name="day" id="move-day" value="{{ move_default_day }}" class="form-control" required>
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small text-muted mb-1" for="move-time">Початок</label>
+            <input type="time" name="time" id="move-time" value="{{ move_default_time }}" class="form-control" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small text-muted mb-1" for="move-note">Причина</label>
+            <input type="text" name="note" id="move-note" maxlength="200" class="form-control" placeholder="Наприклад: свято">
+          </div>
+          <div class="col-md-3">
+            <button type="submit" class="btn btn-primary w-100">Перенести</button>
+          </div>
+        </div>
+        <div class="form-text">
+          Тривалість — {{ lesson_minutes }} хв, як за розкладом. Система перевірить, чи вільні в цей час
+          викладач, група й учні (інші їхні групи).
+        </div>
+      </form>
+    {% endif %}
+
+    {% if can_cancel %}
+      <form method="post" action="{% url 'school:lesson_action' lesson.pk 'cancel' %}"
+            class="collapse card-body border-top" id="act-cancel" data-bs-parent="#lesson-actions">
+        {% csrf_token %}
+        <div class="row g-2 align-items-end">
+          <div class="col-md-8">
+            <label class="form-label small text-muted mb-1" for="cancel-note">Причина скасування</label>
+            <input type="text" name="note" id="cancel-note" maxlength="200" class="form-control"
+                   placeholder="Наприклад: хвороба викладача">
+          </div>
+          <div class="col-md-4">
+            <button type="submit" class="btn btn-danger w-100">Скасувати заняття</button>
+          </div>
+        </div>
+        {% if marked_count %}
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" name="confirm_delete" value="1" id="act-confirm" required>
+            <label class="form-check-label text-danger" for="act-confirm">
+              Так, видалити відмітки ({{ marked_count }}) — на скасованому занятті нікого не було
+            </label>
+          </div>
+        {% endif %}
+        <div class="form-text">
+          Скасоване заняття лишається в історії. Якщо заняття потрібно провести в інший день — краще «Перенести».
+        </div>
+      </form>
+    {% endif %}
+  </div>
+</div>

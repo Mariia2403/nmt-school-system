@@ -283,6 +283,8 @@ class LessonAdmin(admin.ModelAdmin):
     search_fields = ["group__name", "group__subject__name", "topic"]
     date_hierarchy = "starts_at"  # quick navigation by year / month / day
     autocomplete_fields = ["group", "teacher"]
+    # "Перенесено з": only the id with a search button, not a list of thousands of lessons
+    raw_id_fields = ["moved_from"]
     inlines = [AttendanceInline]
     actions = ["mark_all_present"]
 

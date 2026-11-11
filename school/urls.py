@@ -40,6 +40,8 @@ urlpatterns = [
     # Journal: lessons of one day (?date=2026-10-30) and the attendance form of one lesson
     path("journal/", views.journal, name="journal"),
     path("journal/lesson/<int:pk>/", views.journal_lesson, name="journal_lesson"),
+    # Buttons of the administrator on the lesson page: cancel / move / another teacher
+    path("lessons/<int:pk>/<str:action>/", views.lesson_action, name="lesson_action"),
     path("debts/call-list/", views.call_list, name="call_list"),
     # Money of the school. The month is in the address: /finance/?month=2026-10
     path("finance/", views.finance, name="finance"),

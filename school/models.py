@@ -21,7 +21,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import F, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -320,7 +320,10 @@ class StudyGroup(models.Model):
 
         # 2. Remove planned future lessons that do not fit the schedule
         removed = 0
-        for lesson in self.lessons.filter(starts_at__gt=now, status=Lesson.Status.PLANNED, attendance__isnull=True):
+        # A moved lesson (moved_from is not empty) is not in the schedule on purpose: we keep it
+        lessons = self.lessons.filter(starts_at__gt=now, status=Lesson.Status.PLANNED,
+                                      attendance__isnull=True, moved_from__isnull=True)
+        for lesson in lessons:
             local = timezone.localtime(lesson.starts_at)
             if (local.isoweekday(), local.time()) not in slot_keys:
                 lesson.delete()
@@ -512,6 +515,22 @@ class Lesson(models.Model):
     starts_at = models.DateTimeField("Дата і час початку")
     topic = models.CharField("Тема", max_length=200, blank=True)
     status = models.CharField("Статус", max_length=20, choices=Status.choices, default=Status.PLANNED)
+    # A moved lesson: the old lesson gets the status "Перенесене", and a new planned lesson
+    # is created with moved_from = the old one. The schedule sync never deletes such lessons.
+    # SET_NULL: if the old lesson is deleted, the new one stays.
+    moved_from = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="moved_to", verbose_name="Перенесено з",
+    )
+    note = models.CharField(
+        "Причина", max_length=200, blank=True,
+        help_text="Чому заняття скасували або перенесли (наприклад, «хвороба викладача»).",
+    )
+
+    # Lessons that take a teacher, a group and students at their time
+    ACTIVE_STATUSES = [Status.PLANNED, Status.HELD]
+    # If the group has no schedule, we think that a lesson is 90 minutes long
+    DEFAULT_MINUTES = 90
 
     class Meta:
         db_table = "lessons"
@@ -534,6 +553,139 @@ class Lesson(models.Model):
     def save(self, *args, **kwargs):
         self._fill_defaults()  # also works when we create lessons in code
         super().save(*args, **kwargs)
+
+    # ── Length of a lesson ──
+
+    def origin(self):
+        """The first lesson of a chain of moves (a lesson can be moved two times)."""
+        lesson, steps = self, 0
+        while lesson.moved_from_id and steps < 20:  # steps: protection from a loop in bad data
+            lesson, steps = lesson.moved_from, steps + 1
+        return lesson
+
+    def duration(self):
+        """How long the lesson is: from the weekly schedule (17:30-19:00 -> 90 minutes).
+        A moved lesson keeps the length of the lesson it came from."""
+        origin = self.origin()
+        local = timezone.localtime(origin.starts_at)
+        slots = list(GroupSchedule.objects.filter(group_id=self.group_id))
+        same = [s for s in slots if s.weekday == local.isoweekday() and s.start_time == local.time()]
+        slot = (same or slots or [None])[0]
+        if slot is None:
+            return timedelta(minutes=self.DEFAULT_MINUTES)
+        return datetime.combine(date.min, slot.end_time) - datetime.combine(date.min, slot.start_time)
+
+    @property
+    def ends_at(self):
+        return self.starts_at + self.duration()
+
+    @property
+    def is_moved(self):
+        return bool(self.moved_from_id)
+
+    # ── Actions of the administrator ──
+
+    def cancel(self, reason=""):
+        """Cancel the lesson. Marks are deleted: nobody can be present at a cancelled lesson.
+        Returns how many marks were deleted."""
+        if self.status not in self.ACTIVE_STATUSES:
+            raise ValidationError(f"Заняття вже має статус «{self.get_status_display()}».")
+        with transaction.atomic():
+            deleted, _ = self.attendance.all().delete()
+            self.status = self.Status.CANCELLED
+            self.note = reason.strip()[:200]
+            self.save(update_fields=["status", "note"])
+        return deleted
+
+    def move_to(self, new_start, reason=""):
+        """Move the lesson to another date and time.
+        The old lesson stays as history with the status "Перенесене",
+        a new planned lesson is created. Returns the new lesson."""
+        if self.status != self.Status.PLANNED or self.attendance.exists():
+            raise ValidationError("Перенести можна лише заплановане заняття без відміток. "
+                                  "Якщо заняття вже було — позначте його в журналі.")
+        if new_start <= timezone.now():
+            raise ValidationError("Перенести можна лише на майбутній час.")
+        if new_start == self.starts_at:
+            raise ValidationError("Нові дата й час збігаються зі старими.")
+        new_day = timezone.localtime(new_start).date()
+        if self.group.end_date and new_day > self.group.end_date:
+            raise ValidationError(f"Група навчається до {self.group.end_date:%d.%m.%Y} — перенесіть заняття раніше.")
+
+        new_lesson = Lesson(group=self.group, teacher_id=self.teacher_id, starts_at=new_start,
+                            topic=self.topic, moved_from=self)
+        busy = lesson_conflicts(self.group, self.teacher, new_start, new_lesson.ends_at, exclude=[self.pk])
+        if busy:
+            raise ValidationError(busy)
+        with transaction.atomic():
+            self.status = self.Status.RESCHEDULED
+            self.note = reason.strip()[:200]
+            self.save(update_fields=["status", "note"])
+            new_lesson.save()
+        return new_lesson
+
+    def replace_teacher(self, teacher):
+        """Another teacher gives this lesson (the group teacher is ill, on holiday...).
+        The salary goes to the teacher of the lesson, so we check that he is free."""
+        if self.status not in self.ACTIVE_STATUSES:
+            raise ValidationError(f"Заняття має статус «{self.get_status_display()}» — заміна не потрібна.")
+        if not teacher.is_active:
+            raise ValidationError(f"{teacher} зараз не працює в школі.")
+        if teacher.pk == self.teacher_id:
+            raise ValidationError(f"{teacher} уже веде це заняття.")
+        busy = lesson_conflicts(self.group, teacher, self.starts_at, self.ends_at,
+                                exclude=[self.pk], teacher_only=True)
+        if busy:
+            raise ValidationError(busy)
+        self.teacher = teacher
+        self.save(update_fields=["teacher"])
+
+
+def lesson_conflicts(group, teacher, starts_at, ends_at, exclude=(), teacher_only=False):
+    """Who is busy from starts_at to ends_at: the teacher, the group, the students of the group.
+    Only planned and held lessons count (cancelled and moved ones do not take time).
+    Returns a list of texts; an empty list = everybody is free."""
+    day = timezone.localtime(starts_at).date()
+    # A lesson is never longer than 6 hours, so we look only at lessons that start near our time
+    nearby = (
+        Lesson.objects.filter(status__in=Lesson.ACTIVE_STATUSES,
+                              starts_at__lt=ends_at, starts_at__gt=starts_at - timedelta(hours=6))
+        .exclude(pk__in=exclude).select_related("group__subject", "teacher")
+    )
+    overlapping = [lesson for lesson in nearby if lesson.ends_at > starts_at]
+
+    def when(lesson):
+        start = timezone.localtime(lesson.starts_at)
+        return f"{start:%H:%M}–{timezone.localtime(lesson.ends_at):%H:%M}"
+
+    problems = []
+    for lesson in overlapping:
+        if lesson.teacher_id == teacher.pk:
+            problems.append(f"{teacher} у цей час веде «{lesson.group.full_name}» ({when(lesson)}).")
+    if teacher_only:
+        return problems
+
+    for lesson in overlapping:
+        if lesson.group_id == group.pk:
+            problems.append(f"У групи вже є заняття в цей час ({when(lesson)}).")
+
+    # Students: who studies in the group on that day (not on a pause)
+    contracts = (
+        Contract.objects.filter(status__in=Contract.OPEN_STATUSES, start_date__lte=day)
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=day))
+    )
+    student_ids = set(contracts.filter(group=group).values_list("student_id", flat=True))
+    for lesson in overlapping:
+        if lesson.group_id == group.pk or not student_ids:
+            continue
+        names = [
+            str(c.student) for c in
+            contracts.filter(group_id=lesson.group_id, student_id__in=student_ids).select_related("student")
+        ]
+        if names:
+            shown = ", ".join(names[:3]) + (f" і ще {len(names) - 3}" if len(names) > 3 else "")
+            problems.append(f"Учні мають інше заняття «{lesson.group.full_name}» ({when(lesson)}): {shown}.")
+    return problems
 
 
 class Attendance(models.Model):

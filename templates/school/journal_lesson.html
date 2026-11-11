@@ -29,10 +29,33 @@
   <span class="text-muted">
     {{ lesson.starts_at|date:"l, d.m.Y, H:i" }} · {{ lesson.teacher }}
     {% if lesson.teacher_id != lesson.group.teacher_id %}<span class="badge text-bg-warning">заміна</span>{% endif %}
+    {% if lesson.moved_from_id %}
+      <span class="badge text-bg-info">перенесено з {{ lesson.moved_from.starts_at|date:"d.m H:i" }}</span>
+    {% endif %}
   </span>
 </div>
 
-{% if is_future %}
+<!-- Cancelled or moved lesson: what happened and why -->
+{% if lesson.status == "rescheduled" %}
+  <div class="alert alert-warning">
+    <i class="bi bi-arrow-right-circle"></i> Заняття <strong>перенесене</strong>
+    {% if moved_to %}на <a href="{% url 'school:journal_lesson' moved_to.pk %}" class="alert-link">{{ moved_to.starts_at|date:"l, d.m.Y, H:i" }}</a>{% endif %}.
+    {% if lesson.note %}Причина: {{ lesson.note }}.{% endif %}
+  </div>
+{% elif lesson.status == "cancelled" %}
+  <div class="alert alert-secondary">
+    <i class="bi bi-x-circle"></i> Заняття <strong>скасоване</strong>.
+    {% if lesson.note %}Причина: {{ lesson.note }}.{% endif %}
+  </div>
+{% endif %}
+
+{% if is_school_admin and lesson.status != "rescheduled" and lesson.status != "cancelled" %}
+  {% include "school/lesson_actions.html" %}
+{% endif %}
+
+{% if lesson.status == "rescheduled" %}
+  <!-- The students are marked in the new lesson, here is nothing to do -->
+{% elif is_future %}
   <!-- Future lesson: only information, no form -->
   <div class="alert alert-info">
     <i class="bi bi-info-circle"></i>
@@ -70,6 +93,20 @@
         <label for="topic" class="form-label small text-muted mb-1">Тема заняття</label>
         <input type="text" name="topic" id="topic" value="{{ lesson.topic }}" maxlength="200" class="form-control">
       </div>
+      <!-- Only for "Скасоване" (JavaScript shows it) -->
+      <div class="col-12" id="cancel-box">
+        <label for="note" class="form-label small text-muted mb-1">Причина скасування</label>
+        <input type="text" name="note" id="note" value="{{ lesson.note }}" maxlength="200" class="form-control"
+               placeholder="Наприклад: хвороба викладача">
+        {% if marked_count %}
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" name="confirm_delete" value="1" id="confirm_delete">
+            <label class="form-check-label text-danger" for="confirm_delete">
+              Так, видалити відмітки ({{ marked_count }}) — на скасованому занятті нікого не було
+            </label>
+          </div>
+        {% endif %}
+      </div>
     </div>
   </div>
 
@@ -84,6 +121,12 @@
         <i class="bi bi-check2-all"></i> Усі присутні
       </button>
     </div>
+    {% if not marked_count and students %}
+      <div class="px-3 pt-2 small text-muted">
+        <i class="bi bi-info-circle"></i> Усі учні вже позначені «Присутній» — змініть лише тих, кого не було
+        (учні «Без допуску» позначені «Відсутній»). Потім натисніть «Зберегти».
+      </div>
+    {% endif %}
     <div class="list-group list-group-flush">
       {% for s in students %}
         <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2 {% if not s.mark %}bg-light{% endif %}">
@@ -101,7 +144,7 @@
           <div class="btn-group btn-group-sm" role="group">
             {% for value, label, color in buttons %}
               <input type="radio" class="btn-check" name="student_{{ s.pk }}" id="s{{ s.pk }}_{{ value }}"
-                     value="{{ value }}" autocomplete="off" {% if s.mark == value %}checked{% endif %}>
+                     value="{{ value }}" autocomplete="off" {% if s.choice == value %}checked{% endif %}>
               <label class="btn btn-outline-{{ color }}" for="s{{ s.pk }}_{{ value }}">{{ label }}</label>
             {% endfor %}
           </div>
@@ -132,11 +175,13 @@
     });
   });
 
-  // Hide attendance if the lesson is cancelled or rescheduled.
-  // The server also deletes marks in this case, so it works even without JavaScript.
+  // Hide attendance if the lesson is cancelled; show the reason and the confirmation.
+  // The server also checks the confirmation, so it works even without JavaScript.
   var statusSelect = document.getElementById("lesson_status");
   function toggleAttendance() {
-    document.getElementById("attendance-card").hidden = statusSelect.value !== "held";
+    var held = statusSelect.value === "held";
+    document.getElementById("attendance-card").hidden = !held;
+    document.getElementById("cancel-box").hidden = held;
   }
   statusSelect.addEventListener("change", toggleAttendance);
   toggleAttendance();

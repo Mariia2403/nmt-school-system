@@ -28,7 +28,7 @@ from .access import (
 )
 from .models import (
     Attendance, Contract, ContractPause, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
-    Tariff, Teacher, Test, TestResult, months_between, next_month,
+    Tariff, Teacher, Test, TestResult, lesson_conflicts, months_between, next_month,
 )
 
 ZERO = Value(Decimal("0"))
@@ -933,9 +933,10 @@ def group_detail(request, pk):
         c.debt = debts.get(c.student_id, Decimal("0"))
 
     active_count = sum(c.status == Contract.Status.ACTIVE for c in contracts)
+    # Cancelled lessons and the old place of moved lessons are not "next lessons"
     next_lessons = group.lessons.filter(starts_at__gte=now).exclude(
-        status=Lesson.Status.CANCELLED
-    ).select_related("teacher").order_by("starts_at")[:6]
+        status__in=[Lesson.Status.CANCELLED, Lesson.Status.RESCHEDULED]
+    ).select_related("teacher", "moved_from").order_by("starts_at")[:6]
     past_lessons = (
         group.lessons.filter(starts_at__lt=now)
         .select_related("teacher")
@@ -1194,8 +1195,9 @@ ATTENDANCE_BUTTONS = [
     (Attendance.Status.ABSENT, "Відсутній", "danger"),
     (Attendance.Status.EXCUSED, "Поважна", "secondary"),
 ]
-# Statuses that can be chosen for a lesson that has already started
-PAST_LESSON_STATUSES = [Lesson.Status.HELD, Lesson.Status.CANCELLED, Lesson.Status.RESCHEDULED]
+# Statuses that can be chosen in the journal for a lesson that has already started.
+# "Перенесене" is not here: a lesson is moved with the button "Перенести" (it needs a new time).
+PAST_LESSON_STATUSES = [Lesson.Status.HELD, Lesson.Status.CANCELLED]
 
 
 def parse_day(value, today):
@@ -1267,7 +1269,7 @@ def journal(request):
 
     lessons = with_marks(
         lessons_for(request.user).filter(starts_at__date=day)
-        .select_related("group__subject", "group__teacher", "teacher")
+        .select_related("group__subject", "group__teacher", "teacher", "moved_from")
     ).order_by("starts_at")
     mark_lesson_state(lessons, now)
     unmarked = unmarked_lessons(lessons_for(request.user), now)
@@ -1298,17 +1300,32 @@ def journal_lesson(request, pk):
         if is_future:
             messages.error(request, "Заняття ще не почалося — відмічати відвідуваність зарано.")
             return redirect("school:journal_lesson", pk=lesson.pk)
+        if lesson.status == Lesson.Status.RESCHEDULED:
+            messages.error(request, "Заняття перенесене — відмічайте учнів у новому занятті.")
+            return redirect("school:journal_lesson", pk=lesson.pk)
 
         new_status = request.POST.get("lesson_status")
         if new_status not in PAST_LESSON_STATUSES:
             messages.error(request, "Оберіть статус заняття.")
             return redirect("school:journal_lesson", pk=lesson.pk)
 
+        # "Скасоване" deletes all marks: we ask for a confirmation first
+        marks_count = lesson.attendance.count()
+        if new_status != Lesson.Status.HELD and marks_count and not request.POST.get("confirm_delete"):
+            messages.error(
+                request,
+                f"У занятті вже є {marks_count} відміток. Щоб скасувати заняття і видалити їх, "
+                f"поставте галочку «Так, видалити відмітки». Нічого не змінено.",
+            )
+            return redirect("school:journal_lesson", pk=lesson.pk)
+
         # atomic: the lesson and all marks are saved together, or nothing is saved
         with transaction.atomic():
             lesson.topic = request.POST.get("topic", "").strip()[:200]
             lesson.status = new_status
-            lesson.save(update_fields=["topic", "status"])
+            # The reason is kept only for a cancelled lesson
+            lesson.note = request.POST.get("note", "").strip()[:200] if new_status != Lesson.Status.HELD else ""
+            lesson.save(update_fields=["topic", "status", "note"])
 
             if new_status != Lesson.Status.HELD:
                 # Nobody can be "present" at a cancelled lesson
@@ -1343,6 +1360,12 @@ def journal_lesson(request, pk):
         student.mark = marks.get(student.pk)
         student.debt = debts.get(student.pk, Decimal("0"))
         student.no_access = student.pk in blocked
+        # The button that is checked in the form. A new lesson: everybody is "present",
+        # the teacher changes only the absent ones. "Без допуску" -> "absent": he is not let in.
+        if student.mark:
+            student.choice = student.mark
+        else:
+            student.choice = Attendance.Status.ABSENT if student.no_access else Attendance.Status.PRESENT
 
     # Neighbour lessons of the same group: quick moving through the journal
     group_lessons = lessons_for(request.user).filter(group_id=lesson.group_id)
@@ -1368,8 +1391,90 @@ def journal_lesson(request, pk):
         "previous_lesson": previous_lesson,
         "next_lesson": next_lesson,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
+        # The new place of a moved lesson (a lesson can be moved only once, so one or none)
+        "moved_to": lesson.moved_to.order_by("starts_at").first(),
     }
+    if is_admin(request.user):
+        context.update(lesson_actions_context(lesson, marks_count=len(marks)))
     return render(request, "school/journal_lesson.html", context)
+
+
+# ───────────────────────── Lessons: cancel / move / another teacher ─────────────────────────
+
+def substitute_teachers(lesson):
+    """Teachers who can replace the teacher of this lesson.
+    First - teachers of the same subject (they have or had a group of it); if there are none,
+    all working teachers. Every teacher gets .busy: a text if he has another lesson at this time."""
+    same_subject = Teacher.objects.filter(
+        is_active=True, groups__subject_id=lesson.group.subject_id
+    ).exclude(pk=lesson.teacher_id).distinct()
+    teachers = list(same_subject) or list(Teacher.objects.filter(is_active=True).exclude(pk=lesson.teacher_id))
+    for teacher in teachers:
+        problems = lesson_conflicts(lesson.group, teacher, lesson.starts_at, lesson.ends_at,
+                                    exclude=[lesson.pk], teacher_only=True)
+        teacher.busy = problems[0] if problems else ""
+    return teachers
+
+
+def lesson_actions_context(lesson, marks_count):
+    """What the block "Керування заняттям" needs (only for the administrator)."""
+    active = lesson.status in Lesson.ACTIVE_STATUSES
+    local = timezone.localtime(lesson.starts_at)
+    return {
+        "can_cancel": active,
+        "can_move": lesson.status == Lesson.Status.PLANNED and marks_count == 0,
+        "can_replace": active,
+        "substitutes": substitute_teachers(lesson) if active else [],
+        # The form "Перенести" starts with the same time one day later
+        "move_default_day": max(local.date() + timedelta(days=1), timezone.localdate()).isoformat(),
+        "move_default_time": local.strftime("%H:%M"),
+        "lesson_minutes": int(lesson.duration().total_seconds() // 60),
+    }
+
+
+@admin_page
+def lesson_action(request, pk, action):
+    """Buttons of the block "Керування заняттям": cancel / move / replace the teacher.
+    Every action is a method of the Lesson model, so the rules are in one place."""
+    lesson = get_object_or_404(Lesson.objects.select_related("group__subject", "teacher"), pk=pk)
+    if request.method != "POST" or action not in ("cancel", "move", "replace"):
+        return redirect("school:journal_lesson", pk=lesson.pk)
+
+    reason = request.POST.get("note", "")
+    try:
+        if action == "cancel":
+            marks_count = lesson.attendance.count()
+            if marks_count and not request.POST.get("confirm_delete"):
+                raise ValidationError(f"У занятті вже є {marks_count} відміток. Поставте галочку "
+                                      f"«Так, видалити відмітки», щоб скасувати заняття.")
+            deleted = lesson.cancel(reason)
+            text = f"Заняття {timezone.localtime(lesson.starts_at):%d.%m %H:%M} скасовано."
+            if deleted:
+                text += f" Видалено відміток: {deleted}."
+            messages.success(request, text)
+
+        elif action == "move":
+            try:
+                day = date.fromisoformat(request.POST.get("day", ""))
+                at = datetime.strptime(request.POST.get("time", ""), "%H:%M").time()
+            except ValueError:
+                raise ValidationError("Вкажіть нові дату й час.")
+            new_lesson = lesson.move_to(timezone.make_aware(datetime.combine(day, at)), reason)
+            messages.success(request, f"Заняття перенесено на {timezone.localtime(new_lesson.starts_at):%d.%m.%Y %H:%M}.")
+            return redirect("school:journal_lesson", pk=new_lesson.pk)
+
+        else:  # replace
+            teacher = Teacher.objects.filter(pk=request.POST.get("teacher") or None).first()
+            if teacher is None:
+                raise ValidationError("Оберіть викладача.")
+            lesson.replace_teacher(teacher)
+            if teacher.pk == lesson.group.teacher_id:
+                messages.success(request, f"Заняття знову веде викладач групи — {teacher}.")
+            else:
+                messages.success(request, f"Заміна: заняття веде {teacher}. Оплата за це заняття — викладачу, який його веде.")
+    except ValidationError as error:
+        messages.error(request, " ".join(error.messages))
+    return redirect("school:journal_lesson", pk=lesson.pk)
 
 
 # ───────────────────────── Debts ─────────────────────────

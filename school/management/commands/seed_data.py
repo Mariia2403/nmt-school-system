@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
@@ -139,6 +140,11 @@ def money(value):
     return Decimal(value).quantize(Decimal("0.01"))
 
 
+# Reasons for cancelled and moved lessons (lessons.note)
+CANCEL_REASONS = ["Хвороба викладача", "Свято", "Відключення світла", "Технічні причини"]
+MOVE_REASONS = ["Викладач на семінарі", "Збіг із пробним НМТ у школах", "Прохання батьків"]
+
+
 class Command(BaseCommand):
     help = "Заповнює базу даних реалістичними тестовими даними"
 
@@ -170,6 +176,7 @@ class Command(BaseCommand):
         self.create_students()
         self.create_contracts()
         self.create_lessons_and_attendance()
+        self.create_lesson_changes()
         self.create_tests()
         self.create_invoices_and_payments()
         self.create_refunds()
@@ -455,8 +462,9 @@ class Command(BaseCommand):
                     others = [t for t in self.teachers_for[group.subject.name] if t != group.teacher]
                     if others and random.random() < 0.03:
                         teacher = random.choice(others)
+                    note = random.choice(CANCEL_REASONS) if status == Lesson.Status.CANCELLED else ""
                     lesson = Lesson(group=group, teacher=teacher, starts_at=starts_at,
-                                    topic=topics[number % len(topics)], status=status)
+                                    topic=topics[number % len(topics)], status=status, note=note)
                     lessons.append(lesson)
                     number += 1
                 day += timedelta(days=1)
@@ -469,6 +477,44 @@ class Command(BaseCommand):
             for student in self.members_on(lesson.group, lesson.starts_at.date()):
                 attendance.append(Attendance(lesson=lesson, student=student, status=random.choice(statuses)))
         Attendance.objects.bulk_create(attendance)
+
+    def create_lesson_changes(self):
+        """Future changes, so the pages show them: a few moved lessons, a cancelled lesson
+        and a substitute teacher. We use the model methods (move_to, cancel, replace_teacher),
+        so all checks work: a lesson is moved only to a time when everybody is free."""
+        now = timezone.now()
+        future = list(
+            Lesson.objects.filter(status=Lesson.Status.PLANNED, starts_at__gt=now + timedelta(days=1),
+                                  starts_at__lt=now + timedelta(days=14))
+            .select_related("group__subject", "teacher").order_by("?")
+        )
+        moved = cancelled = replaced = 0
+        for lesson in future:
+            if moved < 4:
+                # Same time one or two days later; if somebody is busy, try the next lesson
+                for days in (1, 2):
+                    try:
+                        lesson.move_to(lesson.starts_at + timedelta(days=days), random.choice(MOVE_REASONS))
+                    except ValidationError:
+                        continue
+                    moved += 1
+                    break
+                else:
+                    continue
+            elif cancelled < 2:
+                lesson.cancel(random.choice(CANCEL_REASONS))
+                cancelled += 1
+            elif replaced < 3:
+                for teacher in self.teachers_for[lesson.group.subject.name]:
+                    try:
+                        lesson.replace_teacher(teacher)
+                    except ValidationError:
+                        continue
+                    replaced += 1
+                    break
+            else:
+                break
+        self.stdout.write(f"  Перенесено занять: {moved}, скасовано наперед: {cancelled}, заміни: {replaced}")
 
     def score_for(self, student, test_day):
         """NMT scale score (100-200): student level + progress over time + some luck.

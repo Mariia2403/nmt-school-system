@@ -173,12 +173,20 @@
   <!-- Next lessons -->
   <div class="col-lg-5">
     <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-semibold"><i class="bi bi-calendar-week"></i> Найближчі заняття</div>
+      <div class="card-header bg-white fw-semibold">
+        <i class="bi bi-calendar-week"></i> Найближчі заняття
+        {% if is_school_admin %}<div class="small text-muted fw-normal">Натисніть дату — заміна, перенесення, скасування</div>{% endif %}
+      </div>
       <ul class="list-group list-group-flush">
         {% for lesson in next_lessons %}
           <li class="list-group-item">
-            <strong>{{ lesson.starts_at|date:"D, d.m H:i" }}</strong>
+            <a href="{% url 'school:journal_lesson' lesson.pk %}" class="text-decoration-none text-body">
+              <strong>{{ lesson.starts_at|date:"D, d.m H:i" }}</strong>
+            </a>
             <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
+            {% if lesson.moved_from_id %}
+              <div class="small text-info"><i class="bi bi-arrow-right-circle"></i> перенесено з {{ lesson.moved_from.starts_at|date:"d.m H:i" }}</div>
+            {% endif %}
             {% if lesson.teacher_id != group.teacher_id %}
               <div class="small text-warning"><i class="bi bi-arrow-left-right"></i> заміна: {{ lesson.teacher }}</div>
             {% endif %}
