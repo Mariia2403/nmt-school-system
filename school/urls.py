@@ -13,6 +13,9 @@ urlpatterns = [
     path("students/", views.student_list, name="student_list"),
     # A new student with 1-2 groups in one form
     path("students/new/", views.student_create, name="student_create"),
+    # Import of students from Excel / CSV and its template file
+    path("students/import/", views.student_import, name="student_import"),
+    path("students/import/template/", views.student_import_template, name="student_import_template"),
     # "Записати в групу" for a student who already exists (?student=5 or ?group=3)
     path("enroll/", views.enroll, name="enroll"),
     # A package became incomplete: move the other subjects to a tariff for one subject

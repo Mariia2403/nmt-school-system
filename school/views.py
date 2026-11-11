@@ -15,9 +15,12 @@ from django.core.paginator import Paginator
 from django.db.models import Avg, Count, DecimalField, Exists, F, Func, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 
+from . import importing
 from .forms import EnrollmentForm, StudentForm, SwitchTariffForm, TestForm
 from .access import (
     ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
@@ -537,6 +540,60 @@ def enroll(request):
         "prices": enrollment_prices(),
     }
     return render(request, "school/enroll.html", context)
+
+
+@admin_page
+def student_import(request):
+    """Page "Імпорт учнів з Excel": 1) upload a file -> preview (nothing saved);
+    2) "Імпортувати" -> the good rows are saved. The rows wait between the steps in the session."""
+    context = {"excel": importing.has_excel_support(), "max_rows": importing.MAX_ROWS}
+    if request.method == "POST" and request.POST.get("step") == "import":
+        rows = request.session.pop("import_rows", None)
+        if not rows:
+            messages.error(request, "Немає даних для імпорту — завантажте файл ще раз.")
+            return redirect("school:student_import")
+        counts, errors = importing.import_rows(rows)
+        text = f"Додано учнів: {counts['added']}, записів у групи: {counts['enrolled']}."
+        if counts["skip"]:
+            text += f" Пропущено (уже є): {counts['skip']}."
+        messages.success(request, text)
+        for row, error in errors[:10]:
+            messages.error(request, f"Рядок {row}: {error}")
+        return redirect(f"{reverse('school:student_list')}?status=active")
+
+    if request.method == "POST":
+        uploaded = request.FILES.get("file")
+        if not uploaded:
+            messages.error(request, "Оберіть файл .xlsx або .csv.")
+            return render(request, "school/student_import.html", context)
+        try:
+            rows = importing.read_table(uploaded)
+        except importing.ImportFileError as error:
+            messages.error(request, str(error))
+            return render(request, "school/student_import.html", context)
+        results, counts = importing.check_rows(rows)
+        # Keep only the rows for the second step (plain texts: they fit into the session)
+        request.session["import_rows"] = rows
+        context.update({"results": results, "counts": counts, "file_name": uploaded.name})
+    return render(request, "school/student_import.html", context)
+
+
+@admin_page
+def student_import_template(request):
+    """Download the template: .xlsx with a help sheet (groups and tariffs), or .csv without openpyxl."""
+    if importing.has_excel_support():
+        book = importing.template_workbook()
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = 'attachment; filename="students_template.xlsx"'
+        book.save(response)
+        return response
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = 'attachment; filename="students_template.csv"'
+    response.write("\ufeff")  # BOM: Excel opens UTF-8 correctly
+    response.write(";".join(importing.TEMPLATE_HEADERS) + "\n")
+    return response
 
 
 def student_packages(student):

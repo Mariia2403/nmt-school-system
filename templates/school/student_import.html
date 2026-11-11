@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Імпорт учнів — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:student_list' %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До списку учнів
+</a>
+<h1 class="h3 mt-2 mb-3"><i class="bi bi-file-earmark-spreadsheet"></i> Імпорт учнів з Excel</h1>
+
+{% if not results %}
+  <!-- Step 1: the template and the file -->
+  <div class="row g-3">
+    <div class="col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-white fw-semibold">1. Шаблон</div>
+        <div class="card-body small">
+          <p>Колонки: <strong>Прізвище, Ім'я, Клас</strong>, Телефон учня, ПІБ батьків, Телефон батьків,
+            а також (не обов'язково) <strong>Група, Тариф, Дата початку</strong> — тоді учня одразу буде записано.</p>
+          <ul class="mb-3">
+            <li>Назви груп і тарифів — точно як на сайті. Вони є на аркуші «Довідка» в шаблоні.</li>
+            <li>Кілька груп в одній клітинці — через «;». Пакет «3 предмети» = три групи через «;».</li>
+            <li>Телефони — у будь-якому вигляді, система приведе їх до +380…</li>
+            <li>Учні, які вже є в системі, пропускаються — дублікатів не буде.</li>
+          </ul>
+          <a href="{% url 'school:student_import_template' %}" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-download"></i> Завантажити шаблон{% if excel %} (.xlsx){% else %} (.csv){% endif %}
+          </a>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <form method="post" enctype="multipart/form-data" class="card shadow-sm h-100">
+        {% csrf_token %}
+        <div class="card-header bg-white fw-semibold">2. Файл</div>
+        <div class="card-body">
+          <input type="file" name="file" accept=".xlsx,.csv" class="form-control mb-2" required>
+          <div class="form-text mb-3">
+            .xlsx{% if not excel %} (потрібна бібліотека openpyxl){% endif %} або .csv · до {{ max_rows }} рядків.
+            Спершу буде попередній перегляд — нічого не збережеться без вашого підтвердження.
+          </div>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-search"></i> Перевірити файл</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+{% else %}
+  <!-- Step 2: preview. Nothing is saved yet. -->
+  <div class="alert alert-light border d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <div>
+      <strong>{{ file_name }}</strong> — перевірено рядків: {{ results|length }}.
+      <span class="badge text-bg-success">буде додано: {{ counts.ok }}</span>
+      <span class="badge text-bg-secondary">пропустимо: {{ counts.skip }}</span>
+      <span class="badge text-bg-danger">помилок: {{ counts.error }}</span>
+    </div>
+    <div class="d-flex gap-2">
+      <a href="{% url 'school:student_import' %}" class="btn btn-outline-secondary btn-sm">Інший файл</a>
+      {% if counts.ok %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="step" value="import">
+          <button type="submit" class="btn btn-success btn-sm">
+            <i class="bi bi-check2-circle"></i> Імпортувати {{ counts.ok }}
+          </button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  {% if counts.error %}
+    <p class="small text-muted">Рядки з помилками не імпортуються. Виправте їх у файлі й завантажте ще раз
+      (рядки, що вже додано, будуть просто пропущені).</p>
+  {% endif %}
+
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead class="table-light">
+          <tr><th>Рядок</th><th>Учень</th><th>Клас</th><th>Батьки</th><th>Результат перевірки</th></tr>
+        </thead>
+        <tbody>
+          {% for r in results %}
+            <tr class="{% if r.status == 'error' %}table-danger{% elif r.status == 'skip' %}text-muted{% endif %}">
+              <td>{{ r.row }}</td>
+              <td>{{ r.data.last_name }} {{ r.data.first_name }}</td>
+              <td>{{ r.data.grade }}</td>
+              <td class="small">{{ r.data.parent_name }}<div class="text-muted">{{ r.data.parent_phone }}</div></td>
+              <td class="small">
+                {% if r.status == "ok" %}<span class="badge text-bg-success">буде додано</span>
+                {% elif r.status == "skip" %}<span class="badge text-bg-secondary">пропустимо</span>
+                {% else %}<span class="badge text-bg-danger">помилка</span>{% endif %}
+                {% for m in r.messages %}<div>{{ m }}</div>{% endfor %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

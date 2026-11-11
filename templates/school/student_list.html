@@ -17,6 +17,9 @@
       </a>
     </div>
     {% if is_school_admin %}
+      <a href="{% url 'school:student_import' %}" class="btn btn-outline-primary btn-sm">
+        <i class="bi bi-file-earmark-spreadsheet"></i> Імпорт з Excel
+      </a>
       <a href="{% url 'school:student_create' %}" class="btn btn-primary btn-sm">
         <i class="bi bi-plus-lg"></i> Додати учня
       </a>
