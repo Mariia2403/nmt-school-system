@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Count, Q
 from django.utils import timezone
 
-from .models import Contract, Student, StudyGroup, Tariff
+from .models import Contract, Student, StudyGroup, Tariff, Test
 
 
 class BootstrapMixin:
@@ -228,3 +228,33 @@ class SwitchTariffForm(BootstrapMixin, forms.Form):
         super().__init__(*args, **kwargs)
         self.fields["tariff"].queryset = Tariff.objects.filter(is_active=True, subjects_count=1)
         self.add_bootstrap()
+
+class TestForm(BootstrapMixin, forms.ModelForm):
+    """"Новий тест" on the page of a group. The subject comes from the group.
+    "Для всіх груп предмета" = a school-wide test (for example, a trial NMT for everybody)."""
+
+    for_all_groups = forms.BooleanField(
+        label="Для всіх груп предмета", required=False,
+        help_text="Наприклад, пробне НМТ для всієї школи: тест буде видно в кожній групі цього предмета.",
+    )
+
+    class Meta:
+        model = Test
+        fields = ["title", "kind", "held_at"]
+        widgets = {
+            "held_at": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "title": forms.TextInput(attrs={"placeholder": "Наприклад: Пробне НМТ №2"}),
+        }
+
+    def __init__(self, *args, group, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.group = group
+        self.instance.subject = group.subject
+        self.fields["held_at"].initial = timezone.localdate()
+        self.fields["kind"].initial = Test.Kind.TRIAL
+        self.add_bootstrap()
+        self.fields["for_all_groups"].widget.attrs["class"] = "form-check-input"
+
+    def save(self, commit=True):
+        self.instance.group = None if self.cleaned_data.get("for_all_groups") else self.group
+        return super().save(commit)

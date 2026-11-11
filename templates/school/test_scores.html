@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}Бали: {{ test.title }} — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:group_tests' group.pk %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До тестів групи
+</a>
+<h1 class="h3 mt-2 mb-1"><i class="bi bi-pencil-square"></i> {{ test.title }}</h1>
+<p class="text-muted mb-3">
+  {{ group.full_name }} · {{ test.held_at|date:"d.m.Y" }} · {{ test.get_kind_display }}
+  {% if not test.group_id %}· для всіх груп предмета{% endif %} · внесено {{ filled }} з {{ rows|length }}
+</p>
+
+<!-- What to write: depends on the test type -->
+<div class="alert alert-light border small">
+  {% if field == "raw_score" %}
+    <i class="bi bi-info-circle"></i> Впишіть <strong>тестовий бал</strong> від 0 до {{ table.max_raw }}
+    (кількість правильних відповідей). Бал НМТ 100–200 рахується сам за таблицею {{ table.year }} року;
+    поріг — {{ table.threshold_raw }}.
+  {% elif test.uses_nmt_scale %}
+    <i class="bi bi-exclamation-triangle"></i> Для цього предмета немає таблиці переведення —
+    впишіть <strong>бал НМТ 100–200</strong> вручну.
+  {% else %}
+    <i class="bi bi-info-circle"></i> Впишіть результат у <strong>відсотках</strong> (0–100).
+  {% endif %}
+  <span class="text-muted">Enter — перейти до наступного учня. Порожнє поле — результату немає.</span>
+</div>
+
+<form method="post" id="scores-form" novalidate>
+  {% csrf_token %}
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width: 3rem;">#</th>
+            <th>Учень</th>
+            <th style="width: 11rem;">{% if field == "raw_score" %}Тестовий бал{% elif test.uses_nmt_scale %}Бал НМТ{% else %}Відсоток{% endif %}</th>
+            {% if field == "raw_score" %}<th>Бал НМТ</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr class="{% if row.error %}table-danger{% endif %}">
+              <td class="text-muted">{{ forloop.counter }}</td>
+              <td>{{ row.student.last_name }} {{ row.student.first_name }}</td>
+              <td>
+                <div class="input-group input-group-sm">
+                  <input type="text" inputmode="numeric" name="s{{ row.student.pk }}" value="{{ row.value }}"
+                         class="form-control score-input {% if row.error %}is-invalid{% endif %}" autocomplete="off"
+                         {% if forloop.first %}autofocus{% endif %}>
+                  <span class="input-group-text">{% if field == "raw_score" %}з {{ high }}{% elif test.uses_nmt_scale %}бал{% else %}%{% endif %}</span>
+                </div>
+                {% if row.error %}<div class="small text-danger">{{ row.error }}</div>{% endif %}
+              </td>
+              {% if field == "raw_score" %}
+                <!-- Filled by JavaScript from the conversion table -->
+                <td class="nmt-score fw-semibold">{% if row.result %}{{ row.result.score_display }}{% endif %}</td>
+              {% endif %}
+            </tr>
+          {% empty %}
+            <tr><td colspan="4" class="text-center text-muted py-4">У групі немає учнів.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="d-flex gap-2 mt-3">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Зберегти бали</button>
+    <a href="{% url 'school:group_tests' group.pk %}" class="btn btn-outline-secondary">Скасувати</a>
+  </div>
+</form>
+
+{{ scale|json_script:"nmt-scale" }}
+<script>
+  (function () {
+    var inputs = Array.prototype.slice.call(document.querySelectorAll(".score-input"));
+    var scale = JSON.parse(document.getElementById("nmt-scale").textContent);
+    var threshold = {{ threshold|default:"null" }};
+
+    // Enter = go to the next student (not "send the form"), like in Excel
+    inputs.forEach(function (input, index) {
+      input.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        var next = inputs[index + 1];
+        if (next) { next.focus(); next.select(); }
+        else { document.querySelector("#scores-form button[type=submit]").focus(); }
+      });
+    });
+
+    // NMT tests: show the score 100-200 next to the test score at once
+    if (threshold === null) return;
+    function show(input) {
+      var cell = input.closest("tr").querySelector(".nmt-score");
+      var value = input.value.trim();
+      if (value === "") { cell.textContent = ""; cell.className = "nmt-score"; return; }
+      var raw = parseInt(value, 10);
+      if (isNaN(raw)) { cell.textContent = "?"; return; }
+      if (raw < threshold) { cell.textContent = "поріг не подолано"; cell.className = "nmt-score text-danger small"; return; }
+      cell.textContent = scale[String(raw)] || "?";
+      cell.className = "nmt-score fw-semibold";
+    }
+    inputs.forEach(function (input) {
+      input.addEventListener("input", function () { show(input); });
+      show(input);
+    });
+  })();
+</script>
+{% endblock %}

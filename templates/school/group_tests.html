@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Тести: {{ group.full_name }} — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:group_detail' group.pk %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До групи
+</a>
+<h1 class="h3 mt-2 mb-1"><i class="bi bi-clipboard-check"></i> Тести і бали</h1>
+<p class="text-muted mb-3">{{ group.full_name }} · {{ group.teacher }} · учнів: {{ students_count }}</p>
+
+<div class="row g-3">
+  <!-- Tests of the group: click one to enter or fix the scores -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-semibold">Тести групи</div>
+      <div class="list-group list-group-flush">
+        {% for t in tests %}
+          <a href="{% url 'school:test_scores' group.pk t.pk %}"
+             class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-2">
+            <div>
+              <div class="fw-semibold">{{ t.title }}</div>
+              <div class="small text-muted">
+                {{ t.held_at|date:"d.m.Y" }} · {{ t.get_kind_display }}
+                {% if not t.group_id %}· <span class="badge text-bg-info">для всіх груп</span>{% endif %}
+              </div>
+            </div>
+            <div class="text-end text-nowrap">
+              <span class="badge {% if t.filled >= students_count and students_count %}text-bg-success{% elif t.filled %}text-bg-warning{% else %}text-bg-light border{% endif %}">
+                бали: {{ t.filled }} з {{ students_count }}
+              </span>
+              {% if t.avg_score is not None %}
+                <div class="small text-muted">середній {{ t.avg_score|floatformat:"0" }}{% if not t.uses_nmt_scale %}%{% endif %}</div>
+              {% endif %}
+            </div>
+          </a>
+        {% empty %}
+          <div class="list-group-item text-muted">Тестів ще немає. Створіть перший праворуч.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- New test -->
+  <div class="col-lg-5">
+    <form method="post" class="card card-body shadow-sm" novalidate>
+      {% csrf_token %}
+      <h2 class="h6 mb-3"><i class="bi bi-plus-circle"></i> Новий тест</h2>
+      {% if form.non_field_errors %}<div class="alert alert-danger py-2 small">{{ form.non_field_errors|join:" " }}</div>{% endif %}
+      {% for field in form %}
+        {% if field.name == "for_all_groups" %}
+          <div class="form-check mb-3">
+            {{ field }}
+            <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+            <div class="form-text">{{ field.help_text }}</div>
+          </div>
+        {% else %}
+          <div class="mb-3">
+            <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% for e in field.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      <p class="small text-muted">
+        Діагностичний, пробне НМТ і підсумковий — шкала 100–200: вносите тестовий бал (наприклад, 17 з 32),
+        бал НМТ рахується сам. Тематичний — у відсотках.
+      </p>
+      <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-right-circle"></i> Створити і внести бали</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

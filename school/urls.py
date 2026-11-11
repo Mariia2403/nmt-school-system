@@ -28,6 +28,9 @@ urlpatterns = [
     path("groups/<int:pk>/", views.group_detail, name="group_detail"),
     # Button on the group page: create lessons from the weekly schedule
     path("groups/<int:pk>/sync-lessons/", views.group_sync_lessons, name="group_sync_lessons"),
+    # Tests of a group and the page "Внести бали" (the admin and the teacher of the group)
+    path("groups/<int:pk>/tests/", views.group_tests, name="group_tests"),
+    path("groups/<int:pk>/tests/<int:test_pk>/", views.test_scores, name="test_scores"),
     # Buttons in the "Керування групою" block: finish the group / delete a group created by mistake
     path("groups/<int:pk>/finish/", views.group_finish, name="group_finish"),
     path("groups/<int:pk>/delete/", views.group_delete, name="group_delete"),

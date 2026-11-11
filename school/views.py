@@ -18,7 +18,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import EnrollmentForm, StudentForm, SwitchTariffForm
+from .forms import EnrollmentForm, StudentForm, SwitchTariffForm, TestForm
 from .access import (
     ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
     get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
@@ -998,6 +998,130 @@ def group_delete(request, pk):
         f"рахунками ({counts['invoices']}) і заняттями ({counts['lessons']}).",
     )
     return redirect("school:group_list")
+
+
+# ───────────────────────── Tests and scores ─────────────────────────
+
+def group_for_user(request, pk):
+    """A group that this user may see: the admin - any group, a teacher - only his own."""
+    return get_object_or_404(groups_for(request.user).select_related("subject", "teacher"), pk=pk)
+
+
+@staff_page
+def group_tests(request, pk):
+    """Page "Тести групи": tests of this group + school-wide tests of its subject,
+    and a short form "Новий тест". After creating a test -> the page to enter scores."""
+    group = group_for_user(request, pk)
+    if request.method == "POST":
+        form = TestForm(request.POST, group=group)
+        if form.is_valid():
+            test = form.save()
+            messages.success(request, f"Тест «{test.title}» створено. Внесіть бали учнів.")
+            return redirect("school:test_scores", pk=group.pk, test_pk=test.pk)
+        messages.error(request, "Перевірте поля, позначені червоним.")
+    else:
+        form = TestForm(group=group)
+
+    tests = (
+        Test.objects.filter(Q(group=group) | Q(group__isnull=True, subject=group.subject))
+        .annotate(
+            filled=Count("results", filter=Q(results__student__contracts__group=group), distinct=True),
+            avg_score=Avg("results__score", filter=Q(results__student__contracts__group=group)),
+        )
+        .order_by("-held_at", "-pk")
+    )
+    context = {
+        "group": group,
+        "tests": tests,
+        "form": form,
+        "students_count": group.contracts.filter(status__in=Contract.OPEN_STATUSES).count(),
+    }
+    return render(request, "school/group_tests.html", context)
+
+
+@staff_page
+def test_scores(request, pk, test_pk):
+    """Page "Внести бали": all students of the group in one table, one field per student.
+    NMT tests: the test score (for example, 17 of 32) -> the score 100-200 from the table.
+    Topic tests: percent. An empty field = no result (an old result is deleted)."""
+    group = group_for_user(request, pk)
+    test = get_object_or_404(
+        Test.objects.filter(Q(group=group) | Q(group__isnull=True, subject=group.subject)), pk=test_pk
+    )
+    table = test.conversion_table
+    # What the teacher writes: the test score (NMT with a table) or the score itself
+    field = "raw_score" if table is not None else "score"
+    low, high = (0, table.max_raw) if table is not None else test.score_range()
+
+    # Students: who studies in the group now, plus who already has a result here (left later)
+    results = {r.student_id: r for r in test.results.filter(student__contracts__group=group).distinct()}
+    students = list(
+        Student.objects.filter(
+            Q(contracts__group=group, contracts__status__in=Contract.OPEN_STATUSES) | Q(pk__in=results.keys())
+        ).distinct().order_by("last_name", "first_name")
+    )
+
+    rows = []
+    errors_count = 0
+    if request.method == "POST":
+        to_save, to_delete = [], []
+        for student in students:
+            text = request.POST.get(f"s{student.pk}", "").strip()
+            result = results.get(student.pk)
+            row = {"student": student, "value": text, "result": result, "error": ""}
+            if text == "":
+                if result is not None:
+                    to_delete.append(result)  # the field was cleared -> no result
+            elif not text.isdigit() or not (low <= int(text) <= high):
+                row["error"] = f"Число від {low} до {high}"
+            else:
+                result = result or TestResult(test=test, student=student)
+                setattr(result, field, int(text))
+                if field == "raw_score":
+                    result.score = None  # the score is calculated from the table
+                try:
+                    result.full_clean()  # the same checks as in the admin
+                except ValidationError as error:
+                    row["error"] = " ".join(error.messages)
+                else:
+                    to_save.append(result)
+            errors_count += bool(row["error"])
+            rows.append(row)
+
+        if errors_count:
+            messages.error(request, f"Є помилки в {errors_count} рядках — їх позначено червоним. Нічого не збережено.")
+        else:
+            # atomic: all scores are saved together, or nothing is saved
+            with transaction.atomic():
+                for result in to_save:
+                    result.save()
+                for result in to_delete:
+                    result.delete()
+            text = f"Бали збережено: {len(to_save)}."
+            if to_delete:
+                text += f" Видалено (поле очищено): {len(to_delete)}."
+            messages.success(request, text)
+            return redirect("school:test_scores", pk=group.pk, test_pk=test.pk)
+    else:
+        for student in students:
+            result = results.get(student.pk)
+            value = getattr(result, field) if result is not None else None
+            rows.append({"student": student, "value": "" if value is None else value, "result": result, "error": ""})
+
+    context = {
+        "group": group,
+        "test": test,
+        "table": table,
+        "field": field,
+        "low": low,
+        "high": high,
+        "rows": rows,
+        "filled": sum(1 for r in rows if r["result"] is not None),
+        # For the live "→ 165" next to the field (JavaScript): {test score: NMT score}
+        "scale": {str(raw): score for raw, score in table.scale.items()} if table is not None else {},
+        "threshold": table.threshold_raw if table is not None else None,
+    }
+    return render(request, "school/test_scores.html", context)
 
 
 # ───────────────────────── Journal ─────────────────────────

@@ -15,8 +15,12 @@
       {{ group.start_date|date:"d.m.Y" }} — {{ group.end_date|date:"d.m.Y"|default:"…" }}
     </span>
   </div>
+  <div class="d-flex flex-wrap gap-2">
+    <!-- Tests and scores: for the admin and the teacher of the group -->
+    <a href="{% url 'school:group_tests' group.pk %}" class="btn btn-outline-primary btn-sm">
+      <i class="bi bi-clipboard-check"></i> Тести і бали
+    </a>
   {% if is_school_admin %}
-    <div class="d-flex flex-wrap gap-2">
       <!-- Enroll a student (who exists or a new one) into this group -->
       {% if free > 0 %}
         <a href="{% url 'school:enroll' %}?group={{ group.pk }}" class="btn btn-primary btn-sm">
@@ -38,8 +42,8 @@
       <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="btn btn-outline-primary btn-sm">
         <i class="bi bi-pencil"></i> Редагувати групу і розклад
       </a>
-    </div>
   {% endif %}
+  </div>
 </div>
 
 <!-- Main numbers -->
