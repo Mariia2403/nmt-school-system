@@ -30,8 +30,13 @@
   <span class="text-muted">Enter — перейти до наступного учня. Порожнє поле — результату немає.</span>
 </div>
 
+{% if not can_edit %}
+  <div class="alert alert-light border small"><i class="bi bi-eye"></i> Лише перегляд: бали вносить викладач або менеджер.</div>
+{% endif %}
 <form method="post" id="scores-form" novalidate>
   {% csrf_token %}
+  <!-- disabled: the accountant sees the scores, but cannot change them -->
+  <fieldset {% if not can_edit %}disabled{% endif %}>
   <div class="card shadow-sm">
     <div class="table-responsive">
       <table class="table align-middle mb-0">
@@ -73,6 +78,7 @@
     <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Зберегти бали</button>
     <a href="{% url 'school:group_tests' group.pk %}" class="btn btn-outline-secondary">Скасувати</a>
   </div>
+  </fieldset>
 </form>
 
 {{ scale|json_script:"nmt-scale" }}

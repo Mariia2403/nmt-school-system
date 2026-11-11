@@ -24,7 +24,7 @@
     <a href="#lessons" class="btn btn-outline-primary btn-sm">
       <i class="bi bi-calendar-week"></i> Заняття
     </a>
-  {% if is_school_admin %}
+  {% if can.enroll %}
       <!-- Enroll a student (who exists or a new one) into this group -->
       {% if free > 0 %}
         <a href="{% url 'school:enroll' %}?group={{ group.pk }}" class="btn btn-primary btn-sm">
@@ -35,6 +35,8 @@
           <button class="btn btn-primary btn-sm" disabled><i class="bi bi-person-plus"></i> Записати учня</button>
         </span>
       {% endif %}
+  {% endif %}
+  {% if can.schedule %}
       <!-- POST form: the button changes data, so it is not a simple link -->
       <form method="post" action="{% url 'school:group_sync_lessons' group.pk %}">
         {% csrf_token %}
@@ -62,7 +64,7 @@
           {% empty %}
             <li class="text-danger small">
               Розклад не задано
-              {% if is_school_admin %}— <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="text-danger">задати</a>{% endif %}
+              {% if can.schedule %}— <a href="{% url 'admin:school_studygroup_change' group.pk %}" class="text-danger">задати</a>{% endif %}
             </li>
           {% endfor %}
         </ul>
@@ -93,7 +95,7 @@
     <div class="card stat-card shadow-sm h-100 {% if debtors_count %}border-danger{% endif %}">
       <div class="card-body">
         <div class="small text-muted"><i class="bi bi-exclamation-triangle"></i> Прострочені борги</div>
-        {% if is_school_admin %}
+        {% if can.money %}
           <div class="display-6 {% if debtors_count %}text-danger{% endif %}">{{ debt_total|floatformat:"0g" }} ₴</div>
           <div class="small text-muted">боржників у групі: {{ debtors_count }}</div>
         {% else %}
@@ -113,11 +115,11 @@
       <thead class="table-light">
         <tr>
           <th>Учень</th>
-          {% if is_school_admin %}<th>Тариф</th>{% endif %}
+          {% if can.money %}<th>Тариф</th>{% endif %}
           <th>Телефон батьків</th>
           <th class="text-end">Відвідуваність</th>
           <th class="text-end">Останній бал НМТ</th>
-          <th class="text-end">{% if is_school_admin %}Прострочений борг{% else %}Оплата{% endif %}</th>
+          <th class="text-end">{% if can.money %}Прострочений борг{% else %}Оплата{% endif %}</th>
         </tr>
       </thead>
       <tbody>
@@ -133,7 +135,7 @@
               {% endif %}
               <div class="small text-muted">з {{ c.start_date|date:"d.m.Y" }}</div>
             </td>
-            {% if is_school_admin %}<td class="small">{{ c.tariff.name }}</td>{% endif %}
+            {% if can.money %}<td class="small">{{ c.tariff.name }}</td>{% endif %}
             <td class="text-nowrap">
               {% if c.student.parent_phone %}
                 <a href="tel:{{ c.student.parent_phone }}" class="text-decoration-none">{{ c.student.parent_phone }}</a>
@@ -154,7 +156,7 @@
               {% else %}<span class="text-muted">—</span>{% endif %}
             </td>
             <td class="text-end text-nowrap">
-              {% if c.debt and is_school_admin %}
+              {% if c.debt and can.money %}
                 <span class="text-danger fw-semibold">{{ c.debt|floatformat:"0g" }} ₴</span>
               {% elif c.debt %}
                 <span class="badge text-bg-danger">є борг</span>
@@ -179,7 +181,7 @@
     <div class="card shadow-sm h-100">
       <div class="card-header bg-white fw-semibold">
         <i class="bi bi-calendar-week"></i> Найближчі заняття
-        {% if is_school_admin %}<div class="small text-muted fw-normal">Натисніть дату — заміна, перенесення, скасування</div>{% endif %}
+        {% if can.schedule %}<div class="small text-muted fw-normal">Натисніть дату — заміна, перенесення, скасування</div>{% endif %}
       </div>
       <ul class="list-group list-group-flush">
         {% for lesson in next_lessons %}
@@ -198,7 +200,7 @@
         {% empty %}
           <li class="list-group-item text-muted">
             Запланованих занять немає.
-            {% if is_school_admin %}
+            {% if can.schedule %}
               <div class="small">
                 {% if group.schedule.all %}
                   Натисніть «Оновити заняття за розкладом» угорі — заняття створяться до {{ group.end_date|date:"d.m.Y"|default:"кінця групи" }}.
@@ -248,7 +250,7 @@
   </div>
 </div>
 
-{% if is_school_admin %}
+{% if can.groups %}
 <!-- Finish or delete the group. Kept at the bottom, so nobody clicks it by chance. -->
 <div class="card shadow-sm mt-4 border-danger-subtle">
   <div class="card-header bg-white fw-semibold"><i class="bi bi-gear"></i> Керування групою</div>

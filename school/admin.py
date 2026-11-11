@@ -16,7 +16,7 @@ from django.forms.models import BaseInlineFormSet
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
-from .access import groups_for, is_admin, students_for, subjects_for
+from .access import groups_for, is_office, students_for, subjects_for
 from .models import (
     Attendance, Contract, ContractPause, ConversionRow, ConversionTable, DebtCall, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
@@ -87,7 +87,7 @@ class TestResultInline(admin.TabularInline):
         # A teacher sees results only of his own students
         # (a school-wide test can have students of other teachers)
         qs = super().get_queryset(request)
-        if not is_admin(request.user):
+        if not is_office(request.user):
             qs = qs.filter(student__in=students_for(request.user))
         return qs
 
@@ -102,7 +102,7 @@ class TestResultInline(admin.TabularInline):
                 kwargs["queryset"] = Student.objects.filter(
                     contracts__group__subject_id=test.subject_id
                 ).distinct()
-            if not is_admin(request.user):
+            if not is_office(request.user):
                 kwargs["queryset"] = kwargs["queryset"].filter(pk__in=students_for(request.user))
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
@@ -207,10 +207,12 @@ class StudyGroupAdmin(admin.ModelAdmin):
 
     def get_form(self, request, obj=None, **kwargs):
         form = super().get_form(request, obj, **kwargs)
-        # The name is not required in the form: if it is empty, StudyGroup.clean() gives "група N"
-        name_field = form.base_fields["name"]
-        name_field.required = False
-        name_field.help_text = "Можна залишити порожнім — система сама дасть наступний номер: «група 1», «група 2»…"
+        # The name is not required in the form: if it is empty, StudyGroup.clean() gives "група N".
+        # A user who may only look (the accountant) gets a form without editable fields.
+        name_field = form.base_fields.get("name")
+        if name_field is not None:
+            name_field.required = False
+            name_field.help_text = "Можна залишити порожнім — система сама дасть наступний номер: «група 1», «група 2»…"
         return form
 
     def get_queryset(self, request):
@@ -348,7 +350,7 @@ class TestAdmin(admin.ModelAdmin):
             .select_related("subject", "group__subject")
             .annotate(results_count=Count("results"))
         )
-        if not is_admin(request.user):
+        if not is_office(request.user):
             # A teacher: tests of his groups + school-wide tests of his subjects
             qs = qs.filter(
                 Q(group__in=groups_for(request.user))
@@ -359,13 +361,13 @@ class TestAdmin(admin.ModelAdmin):
     # For a teacher we use simple lists instead of autocomplete:
     # autocomplete would need access to ALL groups and subjects
     def get_autocomplete_fields(self, request):
-        return self.autocomplete_fields if is_admin(request.user) else []
+        return self.autocomplete_fields if is_office(request.user) else []
 
     def get_list_filter(self, request):
-        return self.list_filter if is_admin(request.user) else ["kind"]
+        return self.list_filter if is_office(request.user) else ["kind"]
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        if not is_admin(request.user):
+        if not is_office(request.user):
             if db_field.name == "group":
                 kwargs["queryset"] = groups_for(request.user).select_related("subject")
             elif db_field.name == "subject":
@@ -392,22 +394,22 @@ class TestResultAdmin(admin.ModelAdmin):
     def result(self, obj):
         return obj.score_display()
 
-    # This list is only for the administrator.
+    # This list is only for office workers with the permissions of their role.
     # Teachers enter results inside a test (TestResultInline has its own permissions).
     def has_module_permission(self, request):
-        return is_admin(request.user)
+        return is_office(request.user) and super().has_module_permission(request)
 
     def has_view_permission(self, request, obj=None):
-        return is_admin(request.user)
+        return is_office(request.user) and super().has_view_permission(request, obj)
 
     def has_change_permission(self, request, obj=None):
-        return is_admin(request.user)
+        return is_office(request.user) and super().has_change_permission(request, obj)
 
     def has_add_permission(self, request):
-        return is_admin(request.user)
+        return is_office(request.user) and super().has_add_permission(request)
 
     def has_delete_permission(self, request, obj=None):
-        return is_admin(request.user)
+        return is_office(request.user) and super().has_delete_permission(request, obj)
 
 
 # ───────────────────────── NMT conversion tables ─────────────────────────

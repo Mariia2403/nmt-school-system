@@ -1,8 +1,9 @@
 """
 Views (page logic) of the school website.
 Every page is only for logged-in users with a role (see access.py):
-@staff_page  - administrator and teachers (a teacher sees only his own data),
-@admin_page  - only the administrator (money and debts).
+@staff_page          - every role (a teacher sees only his own data),
+@role_page("calls")  - only roles with this ability (see access.ROLE_ABILITIES),
+@admin_page          - only the director (logins).
 """
 import re
 from datetime import date, datetime, timedelta
@@ -22,9 +23,12 @@ from django.utils import timezone
 
 from . import importing
 from .forms import DebtCallForm, EnrollmentForm, StudentForm, SwitchTariffForm, TestForm
+from django.core.exceptions import PermissionDenied
+
 from .access import (
-    ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
-    get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
+    OFFICE_ROLES, ROLE_LABELS, LoginError, admin_page, can, check_password, create_office_login,
+    create_teacher_login, get_teacher, groups_for, is_office, lessons_for, office_role, role_page, staff_page,
+    students_for, subjects_for, suggest_username,
 )
 from .models import (
     Attendance, Contract, ContractPause, DebtCall, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
@@ -125,7 +129,7 @@ def debtors_to_call(today):
 @staff_page
 def dashboard(request):
     # A teacher has his own main page: his lessons and groups, no money
-    if not is_admin(request.user):
+    if not is_office(request.user):
         return teacher_dashboard(request, get_teacher(request.user))
 
     today = timezone.localdate()
@@ -226,11 +230,12 @@ def student_list(request):
     group_id = request.GET.get("group", "")
     tariff_id = request.GET.get("tariff", "")
     view_mode = "groups" if request.GET.get("view") == "groups" else "list"
-    is_school_admin = is_admin(request.user)
+    office = is_office(request.user)       # sees all groups (not only his own like a teacher)
+    sees_money = can(request.user, "money")  # tariffs and amounts of debts
 
     # Open contracts = the student studies now or is on pause (both keep a place in the group)
     open_contracts = Contract.objects.filter(status__in=Contract.OPEN_STATUSES)
-    if not is_school_admin:
+    if not office:
         # A teacher sees only his groups, also inside a student row
         open_contracts = open_contracts.filter(group__in=groups_for(request.user))
     has_active = Exists(Contract.objects.filter(student=OuterRef("pk"), status=Contract.Status.ACTIVE))
@@ -279,7 +284,7 @@ def student_list(request):
         contract_filter &= Q(group__subject_id=int(subject_id))
     if group_id.isdigit():
         contract_filter &= Q(group_id=int(group_id))
-    if tariff_id.isdigit() and is_school_admin:
+    if tariff_id.isdigit() and sees_money:
         contract_filter &= Q(tariff_id=int(tariff_id))
     if contract_filter:
         students = students.filter(pk__in=open_contracts.filter(contract_filter).values("student_id"))
@@ -342,7 +347,7 @@ def student_list(request):
         "tariff_id": tariff_id,
         "subjects": subjects_for(request.user),
         "groups": groups,
-        "tariffs": Tariff.objects.all() if is_school_admin else Tariff.objects.none(),
+        "tariffs": Tariff.objects.all() if sees_money else Tariff.objects.none(),
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         "grades": students_for(request.user).values_list("grade", flat=True).distinct().order_by("grade"),
         "querystring": params.urlencode(),
@@ -354,7 +359,8 @@ def student_list(request):
 @staff_page
 def student_detail(request, pk):
     today = timezone.localdate()
-    admin = is_admin(request.user)
+    # Money (invoices, payments, calls about debts): office roles; a teacher does not see it
+    admin = can(request.user, "money")
     # If there is no student with this id (or it is a student of another teacher),
     # Django shows the "404 Not found" page
     student = get_object_or_404(students_for(request.user), pk=pk)
@@ -474,7 +480,7 @@ def enrollment_initial(group_id):
     return initial
 
 
-@admin_page
+@role_page("enroll")
 def student_create(request):
     """Page "Новий учень": the student, the parents and 1-2 tariffs (a tariff = one subject
     or a package of 3-4 subjects) in ONE form. After saving -> the student card."""
@@ -514,7 +520,7 @@ def student_create(request):
     return render(request, "school/student_create.html", context)
 
 
-@admin_page
+@role_page("enroll")
 def enroll(request):
     """Page "Записати в групу" for a student who already exists.
     From the student card (?student=5) the student is known, from a group page (?group=3) the group is known.
@@ -544,7 +550,7 @@ def enroll(request):
     return render(request, "school/enroll.html", context)
 
 
-@admin_page
+@role_page("enroll")
 def student_import(request):
     """Page "Імпорт учнів з Excel": 1) upload a file -> preview (nothing saved);
     2) "Імпортувати" -> the good rows are saved. The rows wait between the steps in the session."""
@@ -580,7 +586,7 @@ def student_import(request):
     return render(request, "school/student_import.html", context)
 
 
-@admin_page
+@role_page("enroll")
 def student_import_template(request):
     """Download the template: .xlsx with a help sheet (groups and tariffs), or .csv without openpyxl."""
     if importing.has_excel_support():
@@ -614,7 +620,7 @@ def student_packages(student):
     return list(packages.values())
 
 
-@admin_page
+@role_page("enroll")
 def package_break(request, pk, tariff_id):
     """The student left one subject of a package (rule "Б"): the other subjects of this package
     move to a tariff for one subject. Default: from the 1st day of the next month."""
@@ -651,7 +657,7 @@ def package_break(request, pk, tariff_id):
     return render(request, "school/package_break.html", context)
 
 
-@admin_page
+@role_page("tariffs")
 def tariff_list(request):
     """Page "Тарифи": what is in every tariff, how much it costs and who studies on it.
     Money of every contract = month price with the discount of this contract."""
@@ -699,7 +705,7 @@ def tariff_list(request):
     return render(request, "school/tariff_list.html", context)
 
 
-@admin_page
+@role_page("enroll")
 def contract_action(request, pk, action):
     """Buttons of a contract in the student card (only POST):
     pause  - "Поставити на паузу" (first day without lessons + reason),
@@ -977,7 +983,7 @@ def group_detail(request, pk):
     return render(request, "school/group_detail.html", context)
 
 
-@admin_page
+@role_page("schedule")
 def group_sync_lessons(request, pk):
     """Button "Оновити заняття за розкладом" on the group page (only POST).
     Creates the missing lessons until the end of the group and removes planned lessons
@@ -1001,7 +1007,7 @@ def group_sync_lessons(request, pk):
     return redirect("school:group_detail", pk=group.pk)
 
 
-@admin_page
+@role_page("groups")
 def group_finish(request, pk):
     """Button "Завершити групу" (only POST): the group stops studying on the chosen day.
     Nothing is deleted from the money history: the group just goes to the finished groups."""
@@ -1036,7 +1042,7 @@ def group_finish(request, pk):
     return redirect("school:group_detail", pk=group.pk)
 
 
-@admin_page
+@role_page("groups")
 def group_delete(request, pk):
     """Button "Видалити групу" (only POST): deletes a group created by mistake
     together with its contracts, invoices and lessons — only if there is no money in it."""
@@ -1062,6 +1068,17 @@ def group_delete(request, pk):
 
 # ───────────────────────── Tests and scores ─────────────────────────
 
+def may_enter_scores(user):
+    """Who may create tests and enter scores: a teacher (his groups) or a role with "tests"."""
+    return can(user, "tests") or get_teacher(user) is not None
+
+
+def may_mark_journal(user):
+    """Who may mark attendance: a teacher (his lessons) or a role with "journal".
+    The accountant sees the journal, but does not change it."""
+    return can(user, "journal") or get_teacher(user) is not None
+
+
 def group_for_user(request, pk):
     """A group that this user may see: the admin - any group, a teacher - only his own."""
     return get_object_or_404(groups_for(request.user).select_related("subject", "teacher"), pk=pk)
@@ -1072,6 +1089,8 @@ def group_tests(request, pk):
     """Page "Тести групи": tests of this group + school-wide tests of its subject,
     and a short form "Новий тест". After creating a test -> the page to enter scores."""
     group = group_for_user(request, pk)
+    if request.method == "POST" and not may_enter_scores(request.user):
+        raise PermissionDenied
     if request.method == "POST":
         form = TestForm(request.POST, group=group)
         if form.is_valid():
@@ -1095,6 +1114,7 @@ def group_tests(request, pk):
         "tests": tests,
         "form": form,
         "students_count": group.contracts.filter(status__in=Contract.OPEN_STATUSES).count(),
+        "can_edit": may_enter_scores(request.user),
     }
     return render(request, "school/group_tests.html", context)
 
@@ -1125,6 +1145,8 @@ def test_scores(request, pk, test_pk):
 
     rows = []
     errors_count = 0
+    if request.method == "POST" and not may_enter_scores(request.user):
+        raise PermissionDenied
     if request.method == "POST":
         to_save, to_delete = [], []
         for student in students:
@@ -1184,6 +1206,7 @@ def test_scores(request, pk, test_pk):
         "threshold": table.threshold_raw if table is not None else None,
         # For the live "→ 85%" (JavaScript): the number of tasks of a topic test
         "tasks": test.max_score if test.counts_answers else None,
+        "can_edit": may_enter_scores(request.user),
     }
     return render(request, "school/test_scores.html", context)
 
@@ -1297,6 +1320,8 @@ def journal_lesson(request, pk):
     is_future = lesson.starts_at > now
     students = list(lesson_students(lesson))
 
+    if request.method == "POST" and not may_mark_journal(request.user):
+        raise PermissionDenied
     if request.method == "POST":
         # You cannot mark a lesson that has not started yet
         if is_future:
@@ -1395,8 +1420,9 @@ def journal_lesson(request, pk):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         # The new place of a moved lesson (a lesson can be moved only once, so one or none)
         "moved_to": lesson.moved_to.order_by("starts_at").first(),
+        "can_mark": may_mark_journal(request.user),
     }
-    if is_admin(request.user):
+    if can(request.user, "schedule"):
         context.update(lesson_actions_context(lesson, marks_count=len(marks)))
     return render(request, "school/journal_lesson.html", context)
 
@@ -1434,7 +1460,7 @@ def lesson_actions_context(lesson, marks_count):
     }
 
 
-@admin_page
+@role_page("schedule")
 def lesson_action(request, pk, action):
     """Buttons of the block "Керування заняттям": cancel / move / replace the teacher.
     Every action is a method of the Lesson model, so the rules are in one place."""
@@ -1490,7 +1516,7 @@ def last_calls(student_ids, since):
     return calls
 
 
-@admin_page
+@role_page("calls")
 def call_list(request):
     """The list "to call parents": students with an overdue debt.
     Order: first who must be called now (longest overdue), then who was already called today,
@@ -1530,7 +1556,7 @@ def call_list(request):
     return render(request, "school/call_list.html", context)
 
 
-@admin_page
+@role_page("calls")
 def call_record(request, pk):
     """Button "Записати дзвінок" (a form in a window on the page "До дзвінка")."""
     student = get_object_or_404(Student, pk=pk)
@@ -1613,7 +1639,7 @@ def month_summary(month):
     }
 
 
-@admin_page
+@role_page("finance")
 def finance(request):
     today = timezone.localdate()
     month = parse_month(request.GET.get("month"), today)
@@ -1734,7 +1760,7 @@ def allocate_payment(invoices, amount):
     return plan, rest
 
 
-@admin_page
+@role_page("payments")
 def student_payment(request, pk):
     """Page "Внести оплату": the administrator writes only the amount,
     the system puts it on the invoices (oldest debts first)."""
@@ -1807,8 +1833,9 @@ def student_payment(request, pk):
 
 @admin_page
 def staff_accounts(request):
-    """Page "Доступ": the administrator creates logins for teachers, changes passwords,
-    turns access off and adds new administrators. No console is needed."""
+    """Page "Доступ": the director creates logins for teachers and office workers
+    (administrator, manager, accountant), changes passwords and turns access off.
+    No console is needed."""
     from django.contrib.auth import get_user_model
 
     User = get_user_model()
@@ -1817,9 +1844,26 @@ def staff_accounts(request):
         action = request.POST.get("action")
         password = request.POST.get("password", "")
         try:
-            if action == "create_admin":
-                user = create_admin_login(request.POST.get("username", ""), password, request.POST.get("first_name", ""))
-                messages.success(request, f"Адміністратора «{user.username}» створено.")
+            if action == "create_office":
+                group_name = request.POST.get("role", "")
+                user = create_office_login(request.POST.get("username", ""), password, group_name,
+                                           request.POST.get("first_name", ""))
+                label = ROLE_LABELS[OFFICE_ROLES[group_name]]
+                messages.success(request, f"Логін «{user.username}» ({label}) створено. Передайте логін і пароль працівнику.")
+            elif action in ("office_password", "office_toggle"):
+                worker = get_object_or_404(User, pk=request.POST.get("user"), groups__name__in=OFFICE_ROLES)
+                if action == "office_password":
+                    check_password(password, worker)
+                    worker.set_password(password)
+                    worker.save()
+                    messages.success(request, f"Пароль для «{worker.username}» змінено.")
+                else:
+                    if worker.pk == request.user.pk:
+                        raise LoginError("Не можна вимкнути власний логін — ви не зможете ввійти.")
+                    worker.is_active = not worker.is_active
+                    worker.save(update_fields=["is_active"])
+                    state = "увімкнено" if worker.is_active else "вимкнено"
+                    messages.info(request, f"Доступ для «{worker.username}» {state}.")
             else:
                 teacher = get_object_or_404(Teacher, pk=request.POST.get("teacher"))
                 if action == "create":
@@ -1852,9 +1896,18 @@ def staff_accounts(request):
     )
     for teacher in teachers:
         teacher.suggested_username = suggest_username(teacher)
-    admins = (
-        User.objects.filter(Q(is_superuser=True) | Q(groups__name=ADMIN_GROUP))
+
+    # Office workers: superusers and members of the three office groups
+    workers = list(
+        User.objects.filter(Q(is_superuser=True) | Q(groups__name__in=OFFICE_ROLES))
         .distinct().order_by("username")
     )
-    context = {"teachers": teachers, "admins": admins}
+    for worker in workers:
+        worker.role_label = ROLE_LABELS[office_role(worker)]
+    context = {
+        "teachers": teachers,
+        "workers": workers,
+        # For the select "Роль": (group name, label)
+        "office_roles": [(name, ROLE_LABELS[code]) for name, code in OFFICE_ROLES.items()],
+    }
     return render(request, "school/staff_accounts.html", context)

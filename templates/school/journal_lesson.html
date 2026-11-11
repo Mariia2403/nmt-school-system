@@ -49,7 +49,7 @@
   </div>
 {% endif %}
 
-{% if is_school_admin and lesson.status != "rescheduled" and lesson.status != "cancelled" %}
+{% if can.schedule and lesson.status != "rescheduled" and lesson.status != "cancelled" %}
   {% include "school/lesson_actions.html" %}
 {% endif %}
 
@@ -75,8 +75,13 @@
     </ul>
   </div>
 {% else %}
+{% if not can_mark %}
+  <div class="alert alert-light border small"><i class="bi bi-eye"></i> Лише перегляд: журнал відмічає викладач або менеджер.</div>
+{% endif %}
 <form method="post">
   {% csrf_token %}
+  <!-- disabled: the accountant sees the journal, but cannot change it -->
+  <fieldset {% if not can_mark %}disabled{% endif %}>
 
   <!-- Lesson: status and topic -->
   <div class="card card-body shadow-sm mb-3">
@@ -136,7 +141,7 @@
               <!-- "Спершу гроші": the teacher does not let the student in and sends the parents to the admin -->
               <span class="badge text-bg-danger ms-1" title="Прострочена оплата: на заняття не допускати, батьків — до адміністратора"><i class="bi bi-slash-circle"></i> Без допуску</span>
             {% endif %}
-            {% if s.debt and is_school_admin %}
+            {% if s.debt and can.money %}
               <span class="small text-danger ms-1">борг {{ s.debt|floatformat:"0g" }} ₴</span>
             {% endif %}
           </div>
@@ -161,10 +166,13 @@
     {% endif %}
   </div>
 
+  {% if can_mark %}
   <div class="d-flex gap-2">
     <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Зберегти</button>
     <a href="{% url 'school:journal' %}?date={{ lesson.starts_at|date:'Y-m-d' }}" class="btn btn-outline-secondary">Скасувати</a>
   </div>
+  {% endif %}
+  </fieldset>
 </form>
 
 <script>

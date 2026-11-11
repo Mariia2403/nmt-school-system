@@ -4,10 +4,27 @@
 
 {% block content %}
 <h1 class="h3 mb-1"><i class="bi bi-key"></i> Доступ до системи</h1>
-<p class="text-muted mb-4">
-  Логіни викладачів і адміністраторів. Викладач бачить лише свої групи, журнал і тести — без фінансів.
-  Пароль: щонайменше 8 символів, не лише цифри і не надто простий.
+<p class="text-muted mb-3">
+  Логіни працівників. Пароль: щонайменше 8 символів, не лише цифри і не надто простий.
 </p>
+
+<!-- What every role can do: the same rules as in access.ROLE_ABILITIES -->
+<div class="card shadow-sm mb-4">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-diagram-3"></i> Ролі</div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0 small">
+      <thead class="table-light">
+        <tr><th>Роль</th><th>Що бачить і робить</th><th>Чого не бачить</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="fw-semibold">Адміністратор</td><td>Усе: учні, групи, заняття, фінанси, тарифи, логіни</td><td>—</td></tr>
+        <tr><td class="fw-semibold">Менеджер</td><td>Учні, запис і імпорт, групи й розклад, заняття (скасувати / перенести / заміна), журнал, тести, «До дзвінка», внесення оплати</td><td>Фінанси, тарифи, доступ; завершити чи видалити групу</td></tr>
+        <tr><td class="fw-semibold">Бухгалтер</td><td>Фінанси, внесення оплати, «До дзвінка»; учні, групи й журнал — лише перегляд</td><td>Запис учнів, керування групами й заняттями, тарифи, доступ</td></tr>
+        <tr><td class="fw-semibold">Викладач</td><td>Лише свої групи, журнал своїх занять, тести і бали</td><td>Суми, фінанси, чужі групи</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
 <!-- Teachers -->
 <div class="card shadow-sm mb-4">
@@ -90,45 +107,86 @@
   </div>
 </div>
 
-<!-- Administrators -->
+<!-- Office workers: administrators, managers, accountants -->
 <div class="row g-3">
-  <div class="col-lg-6">
+  <div class="col-lg-7">
     <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-semibold"><i class="bi bi-shield-check"></i> Адміністратори</div>
-      <ul class="list-group list-group-flush">
-        {% for a in admins %}
-          <li class="list-group-item d-flex justify-content-between">
-            <span><code>{{ a.username }}</code> {{ a.first_name }}</span>
-            <span>
-              {% if a.is_superuser %}<span class="badge text-bg-dark">суперкористувач</span>{% endif %}
-              {% if not a.is_active %}<span class="badge text-bg-secondary">вимкнено</span>{% endif %}
-            </span>
-          </li>
-        {% endfor %}
-      </ul>
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-shield-check"></i> Працівники офісу</div>
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead class="table-light"><tr><th>Логін</th><th>Роль</th><th>Дії</th></tr></thead>
+          <tbody>
+            {% for w in workers %}
+              <tr class="{% if not w.is_active %}text-muted{% endif %}">
+                <td>
+                  <code>{{ w.username }}</code> {{ w.first_name }}
+                  <div class="small text-muted">останній вхід: {{ w.last_login|date:"d.m.Y H:i"|default:"ще не входив" }}</div>
+                </td>
+                <td>
+                  <span class="badge text-bg-primary">{{ w.role_label }}</span>
+                  {% if w.is_superuser %}<span class="badge text-bg-dark">суперкористувач</span>{% endif %}
+                  {% if not w.is_active %}<span class="badge text-bg-secondary">вимкнено</span>{% endif %}
+                </td>
+                <td>
+                  <div class="d-flex flex-wrap gap-2">
+                    <form method="post" class="d-flex gap-2">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="office_password">
+                      <input type="hidden" name="user" value="{{ w.pk }}">
+                      <input type="password" name="password" class="form-control form-control-sm" style="max-width: 160px"
+                             placeholder="новий пароль" autocomplete="new-password" required minlength="8">
+                      <button type="submit" class="btn btn-outline-primary btn-sm text-nowrap">Змінити пароль</button>
+                    </form>
+                    {% if w.pk != user.pk and not w.is_superuser %}
+                      <form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="office_toggle">
+                        <input type="hidden" name="user" value="{{ w.pk }}">
+                        {% if w.is_active %}
+                          <button type="submit" class="btn btn-outline-danger btn-sm text-nowrap"><i class="bi bi-lock"></i> Вимкнути</button>
+                        {% else %}
+                          <button type="submit" class="btn btn-outline-success btn-sm text-nowrap"><i class="bi bi-unlock"></i> Увімкнути</button>
+                        {% endif %}
+                      </form>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
-  <div class="col-lg-6">
+  <div class="col-lg-5">
     <div class="card shadow-sm h-100">
-      <div class="card-header bg-white fw-semibold"><i class="bi bi-person-plus"></i> Новий адміністратор</div>
+      <div class="card-header bg-white fw-semibold"><i class="bi bi-person-plus"></i> Новий працівник офісу</div>
       <div class="card-body">
         <form method="post" class="row g-2">
           {% csrf_token %}
-          <input type="hidden" name="action" value="create_admin">
-          <div class="col-sm-6">
-            <label class="form-label small text-muted mb-1">Логін</label>
-            <input type="text" name="username" class="form-control" required placeholder="manager">
+          <input type="hidden" name="action" value="create_office">
+          <div class="col-12">
+            <label class="form-label small text-muted mb-1" for="new-role">Роль</label>
+            <select name="role" id="new-role" class="form-select" required>
+              {% for value, label in office_roles %}
+                <option value="{{ value }}" {% if forloop.counter == 2 %}selected{% endif %}>{{ label|capfirst }}</option>
+              {% endfor %}
+            </select>
           </div>
           <div class="col-sm-6">
-            <label class="form-label small text-muted mb-1">Ім'я</label>
-            <input type="text" name="first_name" class="form-control" placeholder="Олена">
+            <label class="form-label small text-muted mb-1" for="new-username">Логін</label>
+            <input type="text" name="username" id="new-username" class="form-control" required placeholder="olena.manager">
+          </div>
+          <div class="col-sm-6">
+            <label class="form-label small text-muted mb-1" for="new-name">Ім'я</label>
+            <input type="text" name="first_name" id="new-name" class="form-control" placeholder="Олена">
           </div>
           <div class="col-12">
-            <label class="form-label small text-muted mb-1">Пароль</label>
-            <input type="password" name="password" class="form-control" required minlength="8" autocomplete="new-password">
+            <label class="form-label small text-muted mb-1" for="new-password">Пароль</label>
+            <input type="password" name="password" id="new-password" class="form-control" required minlength="8" autocomplete="new-password">
           </div>
           <div class="col-12">
-            <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus"></i> Створити адміністратора</button>
+            <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus"></i> Створити логін</button>
           </div>
         </form>
       </div>

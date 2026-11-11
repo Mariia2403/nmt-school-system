@@ -15,21 +15,26 @@
       <!-- The same rule as in the Journal: settings.ACCESS_BLOCK_DAYS -->
       <div class="alert alert-danger py-2 px-3 mt-2 mb-0 small">
         <i class="bi bi-slash-circle"></i> <strong>Без допуску до занять</strong> — оплата прострочена понад {{ access_block_days }} дн.
-        {% if is_school_admin %}Після оплати («Внести оплату») доступ відкриється сам.{% else %}Направте батьків до адміністратора.{% endif %}
+        {% if can.payments %}Після оплати («Внести оплату») доступ відкриється сам.{% else %}Направте батьків до адміністратора.{% endif %}
       </div>
     {% endif %}
   </div>
-  {% if is_school_admin %}
+  {% if is_office %}
+    <!-- Every button only for roles that may do it (access.ROLE_ABILITIES) -->
     <div class="d-flex gap-2">
-      <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-success btn-sm">
-        <i class="bi bi-cash-coin"></i> Внести оплату
-      </a>
-      <a href="{% url 'school:enroll' %}?student={{ student.pk }}" class="btn btn-primary btn-sm">
-        <i class="bi bi-person-plus"></i> Записати в групу
-      </a>
-      <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
-        <i class="bi bi-pencil"></i> Редагувати
-      </a>
+      {% if can.payments %}
+        <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-success btn-sm">
+          <i class="bi bi-cash-coin"></i> Внести оплату
+        </a>
+      {% endif %}
+      {% if can.enroll %}
+        <a href="{% url 'school:enroll' %}?student={{ student.pk }}" class="btn btn-primary btn-sm">
+          <i class="bi bi-person-plus"></i> Записати в групу
+        </a>
+        <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
+          <i class="bi bi-pencil"></i> Редагувати
+        </a>
+      {% endif %}
     </div>
   {% endif %}
 </div>
@@ -69,7 +74,7 @@
   <div class="col-sm-4 col-lg-3">
     <div class="card stat-card shadow-sm h-100 text-center {% if overdue_debt %}border-danger{% endif %}">
       <div class="card-body">
-        {% if is_school_admin %}
+        {% if can.money %}
           <div class="small text-muted">Прострочений борг (понад {{ overdue_days }} дн.)</div>
           <div class="display-6 {% if overdue_debt %}text-danger{% endif %}">{{ overdue_debt|floatformat:"0g" }} ₴</div>
           <div class="small text-muted">до сплати зараз: {{ unpaid_total|floatformat:"0g" }} ₴</div>
@@ -150,7 +155,7 @@
   <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-contracts" type="button">Договори</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-attendance" type="button">Відвідуваність</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-tests" type="button">Тести</button></li>
-  {% if is_school_admin %}
+  {% if can.money %}
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-finance" type="button">Рахунки та оплати</button></li>
   {% endif %}
 </ul>
@@ -159,7 +164,7 @@
 
   <!-- Contracts and groups -->
   <div class="tab-pane fade show active" id="tab-contracts">
-    {% if is_school_admin %}
+    {% if can.money %}
       <!-- Packages: several subjects for one price. If a subject was left, the package is not complete. -->
       {% for p in packages %}
         <div class="alert {% if p.complete %}alert-primary{% else %}alert-warning{% endif %} m-3 py-2">
@@ -175,7 +180,7 @@
                 </div>
               {% endif %}
             </div>
-            {% if not p.complete %}
+            {% if not p.complete and can.enroll %}
               <a href="{% url 'school:package_break' student.pk p.tariff.pk %}" class="btn btn-warning btn-sm">
                 <i class="bi bi-arrow-left-right"></i> Перевести на окремий тариф
               </a>
@@ -186,7 +191,7 @@
     {% endif %}
     <div class="table-responsive">
       <table class="table align-middle mb-0">
-        <thead><tr><th>№</th><th>Група</th><th>Викладач</th>{% if is_school_admin %}<th>Тариф</th><th>Оплата</th>{% endif %}<th>Період</th>{% if is_school_admin %}<th>Знижка</th>{% endif %}<th>Статус</th>{% if is_school_admin %}<th>Дії</th>{% endif %}</tr></thead>
+        <thead><tr><th>№</th><th>Група</th><th>Викладач</th>{% if can.money %}<th>Тариф</th><th>Оплата</th>{% endif %}<th>Період</th>{% if can.money %}<th>Знижка</th>{% endif %}<th>Статус</th>{% if can.enroll %}<th>Дії</th>{% endif %}</tr></thead>
         <tbody>
           {% for c in contracts %}
             <tr>
@@ -195,7 +200,7 @@
                 <div class="small text-muted">{{ c.group.get_level_display }} · {{ c.group.schedule_text }}</div>
               </td>
               <td>{{ c.group.teacher }}</td>
-              {% if is_school_admin %}
+              {% if can.money %}
               <td>
                 {{ c.tariff.name }}
                 {% if c.tariff.is_package %}<div class="small text-muted">частина пакета: {{ c.monthly_amount|floatformat:"0g" }} ₴/міс</div>{% endif %}
@@ -212,14 +217,14 @@
                   </div>
                 {% endfor %}
               </td>
-              {% if is_school_admin %}
+              {% if can.money %}
               <td>{% if c.discount_pct %}{{ c.discount_pct|floatformat:0 }}%{% else %}—{% endif %}</td>
               {% endif %}
               <td>
                 <span class="badge text-bg-{% if c.status == 'active' %}success{% elif c.status == 'suspended' %}warning{% else %}secondary{% endif %}">
                   {{ c.get_status_display }}
                 </span>
-                {% if is_school_admin %}
+                {% if can.money %}
                   <!-- Refund requests that still wait: the admin must give the money back -->
                   {% for r in c.refunds.all %}
                     {% if r.status == "pending" or r.status == "approved" %}
@@ -228,7 +233,7 @@
                   {% endfor %}
                 {% endif %}
               </td>
-              {% if is_school_admin %}
+              {% if can.enroll %}
               <td class="small" style="min-width: 210px;">
                 <!-- <details> opens a small form without JavaScript -->
                 {% if c.status == "active" %}

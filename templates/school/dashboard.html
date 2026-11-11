@@ -36,7 +36,9 @@
         <div class="text-muted small"><i class="bi bi-cash-stack"></i> Оплати за {{ today|date:"F"|lower }}</div>
         <div class="display-6 text-success">{{ payments_sum|floatformat:"0g" }} ₴</div>
         <div class="small text-muted">{{ payments_count }} оплат</div>
-        <a href="{% url 'school:finance' %}#tab-payments" class="stretched-link" title="Оплати в розділі Фінанси"></a>
+        {% if can.finance %}
+          <a href="{% url 'school:finance' %}#tab-payments" class="stretched-link" title="Оплати в розділі Фінанси"></a>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -55,6 +57,8 @@
   </div>
 </div>
 
+<!-- Expenses and the reserve: only for roles with the page "Фінанси" (director, accountant) -->
+{% if can.finance %}
 <div class="row g-3 mb-4">
   <div class="col-md-6">
     <div class="card card-hover shadow-sm h-100">
@@ -75,6 +79,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 
 <!-- Lessons that started but have no marks: the admin reminds the teacher.
      Shown only if there are such lessons, so it does not take space for nothing. -->

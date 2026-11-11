@@ -17,13 +17,12 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from school.access import ADMIN_GROUP, create_teacher_login, setup_role_groups
+from school.access import ACCOUNTANT_GROUP, ADMIN_GROUP, MANAGER_GROUP, create_teacher_login, setup_role_groups
 from school.models import (
     Attendance, Contract, ContractPause, ConversionRow, ConversionTable, DebtCall, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
@@ -675,16 +674,24 @@ class Command(BaseCommand):
             month = add_month(month)
 
     def create_demo_logins(self):
-        """Roles + demo logins: "director" (administrator) and one login for every teacher.
+        """Roles + demo logins: "director" (administrator), "manager", "accountant"
+        and one login for every teacher.
         Logins are not deleted by --clear: they are linked again to the new teachers."""
-        setup_role_groups()
+        groups = setup_role_groups()
         User = get_user_model()
-        director, _ = User.objects.get_or_create(username=DEMO_ADMIN, defaults={"first_name": "Директор"})
-        director.is_staff = True
-        director.set_password(DEMO_PASSWORD)
-        director.save()
-        director.groups.add(Group.objects.get(name=ADMIN_GROUP))
-        self.logins = [DEMO_ADMIN]
+        self.logins = []
+        for username, first_name, group_name in [
+            (DEMO_ADMIN, "Директор", ADMIN_GROUP),
+            ("manager", "Олена (менеджер)", MANAGER_GROUP),
+            ("accountant", "Ірина (бухгалтер)", ACCOUNTANT_GROUP),
+        ]:
+            user, _ = User.objects.get_or_create(username=username, defaults={"first_name": first_name})
+            user.is_staff = True  # the admin opens; the group permissions decide what is there
+            user.is_active = True
+            user.set_password(DEMO_PASSWORD)
+            user.save()
+            user.groups.set([groups[group_name]])
+            self.logins.append(username)
         for teacher in self.teachers:
             user, _ = create_teacher_login(teacher, DEMO_PASSWORD)
             user.set_password(DEMO_PASSWORD)  # the same demo password every time
@@ -743,4 +750,4 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Демо-логіни (пароль «{DEMO_PASSWORD}»): {', '.join(self.logins)}"
         ))
-        self.stdout.write("  director — адміністратор; інші — викладачі (бачать лише свої групи).")
+        self.stdout.write("  director — адміністратор, manager — менеджер, accountant — бухгалтер; інші — викладачі (свої групи).")

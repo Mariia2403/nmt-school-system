@@ -1,9 +1,9 @@
 """
-Create the roles "Адміністратор" and "Викладач" (Django groups with permissions).
+Create the roles "Адміністратор", "Менеджер", "Бухгалтер" and "Викладач" (Django groups with permissions).
 
 Usage:
     python manage.py setup_roles
-        - only create / update the two groups (safe to run many times)
+        - only create / update the four groups (safe to run many times)
     python manage.py setup_roles --teacher-logins --password "SomePassword123"
         - also create a login for every active teacher who has no login yet
           (login = surname in Latin letters, for example "kovalenko")
@@ -16,7 +16,7 @@ from school.models import Teacher
 
 
 class Command(BaseCommand):
-    help = "Створює ролі «Адміністратор» і «Викладач» та (за бажанням) логіни викладачів"
+    help = "Створює ролі «Адміністратор», «Менеджер», «Бухгалтер», «Викладач» та (за бажанням) логіни викладачів"
 
     def add_arguments(self, parser):
         parser.add_argument("--teacher-logins", action="store_true",
@@ -26,7 +26,7 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         setup_role_groups()
-        self.stdout.write(self.style.SUCCESS("Ролі «Адміністратор» і «Викладач» готові."))
+        self.stdout.write(self.style.SUCCESS("Ролі «Адміністратор», «Менеджер», «Бухгалтер» і «Викладач» готові."))
 
         if not options["teacher_logins"]:
             return

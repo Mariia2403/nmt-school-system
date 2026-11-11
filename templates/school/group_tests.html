@@ -41,7 +41,8 @@
     </div>
   </div>
 
-  <!-- New test -->
+  <!-- New test (the accountant only looks at the scores) -->
+  {% if can_edit %}
   <div class="col-lg-5">
     <form method="post" class="card card-body shadow-sm" novalidate>
       {% csrf_token %}
@@ -70,8 +71,10 @@
       <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-right-circle"></i> Створити і внести бали</button>
     </form>
   </div>
+  {% endif %}
 </div>
 
+{% if can_edit %}
 <script>
   // "Кількість завдань" is only for topic tests: hide it for NMT tests
   (function () {
@@ -82,4 +85,5 @@
     toggle();
   })();
 </script>
+{% endif %}
 {% endblock %}

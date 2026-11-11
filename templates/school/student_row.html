@@ -30,17 +30,17 @@
         <div class="mb-1">
           <span class="badge text-bg-light border {% if c.status == 'suspended' %}text-decoration-line-through{% endif %}"
                 {% if c.status == 'suspended' %}title="На паузі"{% endif %}>{{ c.group.full_name }}</span>
-          {% if is_school_admin %}<span class="small text-muted">{{ c.tariff.name }}</span>{% endif %}
+          {% if can.money %}<span class="small text-muted">{{ c.tariff.name }}</span>{% endif %}
         </div>
       {% empty %}
         <span class="text-muted">—</span>
       {% endfor %}
     </td>
-  {% elif contract and is_school_admin %}
+  {% elif contract and can.money %}
     <td class="small text-muted">{{ contract.tariff.name }}{% if contract.discount_pct %} · знижка {{ contract.discount_pct|floatformat:"-2" }}%{% endif %}</td>
   {% endif %}
   <td class="text-end text-nowrap">
-    {% if student.debt and is_school_admin %}
+    {% if student.debt and can.money %}
       <span class="text-danger fw-semibold">{{ student.debt|floatformat:"0g" }} ₴</span>
     {% elif student.debt %}
       <!-- A teacher sees only the fact of a debt, not the amount -->
@@ -50,7 +50,7 @@
     {% endif %}
     {% if student.no_access %}<div><span class="badge text-bg-danger"><i class="bi bi-slash-circle"></i> Без допуску</span></div>{% endif %}
   </td>
-  {% if is_school_admin %}
+  {% if can.payments %}
     <td class="text-end">
       <!-- Parents brought money: enter it right from the list -->
       <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-outline-success btn-sm text-nowrap" title="Внести оплату">
