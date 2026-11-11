@@ -33,6 +33,7 @@
       <select name="debt" class="form-select">
         <option value="">Усі</option>
         <option value="overdue" {% if debt_filter == "overdue" %}selected{% endif %}>Прострочений</option>
+        <option value="noaccess" {% if debt_filter == "noaccess" %}selected{% endif %}>Без допуску</option>
       </select>
     </div>
     <div class="col-6 col-md-2">
@@ -104,6 +105,7 @@
               {% else %}
                 <span class="text-muted">—</span>
               {% endif %}
+              {% if student.no_access %}<div><span class="badge text-bg-danger"><i class="bi bi-slash-circle"></i> Без допуску</span></div>{% endif %}
             </td>
           </tr>
         {% empty %}

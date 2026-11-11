@@ -11,6 +11,13 @@
   <div>
     <h1 class="h3 mb-1">{{ student.last_name }} {{ student.first_name }}</h1>
     <span class="text-muted">{{ student.grade }} клас · зареєстрований {{ student.registered_at|date:"d.m.Y" }}</span>
+    {% if no_access %}
+      <!-- The same rule as in the Journal: settings.ACCESS_BLOCK_DAYS -->
+      <div class="alert alert-danger py-2 px-3 mt-2 mb-0 small">
+        <i class="bi bi-slash-circle"></i> <strong>Без допуску до занять</strong> — оплата прострочена понад {{ access_block_days }} дн.
+        {% if is_school_admin %}Після оплати («Внести оплату») доступ відкриється сам.{% else %}Направте батьків до адміністратора.{% endif %}
+      </div>
+    {% endif %}
   </div>
   {% if is_school_admin %}
     <div class="d-flex gap-2">

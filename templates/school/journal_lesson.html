@@ -44,7 +44,7 @@
       {% for s in students %}
         <li class="list-group-item">
           {{ s.last_name }} {{ s.first_name }}
-          {% if s.debt %}<i class="bi bi-exclamation-circle-fill text-danger ms-1" title="Прострочена оплата"></i>{% endif %}
+          {% if s.no_access %}<span class="badge text-bg-danger ms-1" title="Прострочена оплата: на заняття не допускати, батьків — до адміністратора"><i class="bi bi-slash-circle"></i> Без допуску</span>{% endif %}
         </li>
       {% empty %}
         <li class="list-group-item text-muted">У групі немає учнів.</li>
@@ -89,10 +89,12 @@
         <div class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-2 {% if not s.mark %}bg-light{% endif %}">
           <div>
             <a href="{% url 'school:student_detail' s.pk %}" class="text-decoration-none text-body fw-semibold">{{ s.last_name }} {{ s.first_name }}</a>
-            {% if s.debt %}
-              <span class="badge text-bg-danger ms-1" title="Прострочено понад {{ overdue_days }} дн.">
-                <i class="bi bi-exclamation-circle"></i> борг{% if is_school_admin %} {{ s.debt|floatformat:"0g" }} ₴{% endif %}
-              </span>
+            {% if s.no_access %}
+              <!-- "Спершу гроші": the teacher does not let the student in and sends the parents to the admin -->
+              <span class="badge text-bg-danger ms-1" title="Прострочена оплата: на заняття не допускати, батьків — до адміністратора"><i class="bi bi-slash-circle"></i> Без допуску</span>
+            {% endif %}
+            {% if s.debt and is_school_admin %}
+              <span class="small text-danger ms-1">борг {{ s.debt|floatformat:"0g" }} ₴</span>
             {% endif %}
           </div>
           <!-- Radio buttons look like a group of buttons (Bootstrap "btn-check") -->
@@ -108,9 +110,10 @@
         <div class="list-group-item text-muted">На дату заняття в групі немає учнів.</div>
       {% endfor %}
     </div>
-    {% if debtors_count %}
+    {% if no_access_count %}
       <div class="card-footer bg-white small text-danger">
-        <i class="bi bi-exclamation-circle"></i> Боржників на занятті: {{ debtors_count }}. Нагадайте про оплату або передайте адміністратору.
+        <i class="bi bi-slash-circle"></i> Без допуску: {{ no_access_count }}. Оплата прострочена — не допускайте учня
+        на заняття і попросіть батьків звернутися до адміністратора. Після оплати позначка зникне сама.
       </div>
     {% endif %}
   </div>

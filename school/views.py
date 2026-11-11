@@ -11,7 +11,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Avg, Count, DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
+from django.db.models import Avg, Count, DecimalField, Exists, F, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
@@ -73,6 +73,19 @@ def debt_by_student(today):
         student = inv.contract.student
         debts[student] = debts.get(student, Decimal("0")) + inv.debt_value
     return debts
+
+
+def no_access_ids(today):
+    """IDs of students who must NOT come to lessons ("Без допуску"):
+    they have an unpaid invoice (any group) that is more than ACCESS_BLOCK_DAYS days late.
+    One SQL query. Used by the Journal, the group page, the student card and lists."""
+    limit = today - timedelta(days=settings.ACCESS_BLOCK_DAYS)
+    return set(
+        Invoice.objects
+        .annotate(paid_sum=Coalesce(Sum("payments__amount"), ZERO, output_field=MONEY_FIELD))
+        .filter(due_date__lt=limit, paid_sum__lt=F("amount"))
+        .values_list("contract__student_id", flat=True)
+    )
 
 
 def debtors_to_call(today):
@@ -232,8 +245,11 @@ def student_list(request):
 
     # Debts are calculated once and used for the filter and for the table
     debts = debt_by_student(today)
+    blocked = no_access_ids(today)
     if debt_filter == "overdue":
         students = students.filter(pk__in=[s.pk for s in debts])
+    elif debt_filter == "noaccess":
+        students = students.filter(pk__in=blocked)
 
     total_found = students.count()
     page = Paginator(students, 20).get_page(request.GET.get("page"))
@@ -241,6 +257,7 @@ def student_list(request):
     # Add the debt to every student on this page
     for student in page:
         student.debt = debts.get(student, Decimal("0"))
+        student.no_access = student.pk in blocked
 
     # Keep search and filters when the user goes to another page
     params = request.GET.copy()
@@ -329,6 +346,9 @@ def student_detail(request, pk):
         "nmt_results_count": results.filter(test__kind__in=Test.NMT_SCALE_KINDS).count(),
         "invoices": invoices,
         "overdue_debt": overdue_debt,
+        # "Без допуску": the same rule as in the Journal (settings.ACCESS_BLOCK_DAYS)
+        "no_access": student.pk in no_access_ids(today),
+        "access_block_days": settings.ACCESS_BLOCK_DAYS,
         "unpaid_total": unpaid_total,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         "today": today,  # default date in the pause / leave forms
@@ -555,7 +575,9 @@ def group_detail(request, pk):
         last_scores.setdefault(result.student_id, result)  # the first one is the newest
 
     debts = overdue_by_group(today).get(group.id, {})
+    blocked = no_access_ids(today)
     for c in contracts:
+        c.no_access = c.student_id in blocked
         stats = attendance.get(c.student_id)
         c.attendance_pct = round(stats["present"] * 100 / stats["total"]) if stats and stats["total"] else None
         c.last_score = last_scores.get(c.student_id)
@@ -839,9 +861,11 @@ def journal_lesson(request, pk):
     # GET: show the form
     marks = dict(lesson.attendance.values_list("student_id", "status"))
     debts = overdue_by_group(timezone.localdate()).get(lesson.group_id, {})
+    blocked = no_access_ids(timezone.localdate())
     for student in students:
         student.mark = marks.get(student.pk)
         student.debt = debts.get(student.pk, Decimal("0"))
+        student.no_access = student.pk in blocked
 
     # Neighbour lessons of the same group: quick moving through the journal
     group_lessons = lessons_for(request.user).filter(group_id=lesson.group_id)
@@ -863,6 +887,7 @@ def journal_lesson(request, pk):
         "form_status": form_status,
         "marked_count": len(marks),
         "debtors_count": sum(1 for s in students if s.debt),
+        "no_access_count": sum(1 for s in students if s.no_access),
         "previous_lesson": previous_lesson,
         "next_lesson": next_lesson,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
@@ -877,6 +902,9 @@ def call_list(request):
     """The list "to call parents": students with an overdue debt."""
     today = timezone.localdate()
     rows = debtors_to_call(today)
+    blocked = no_access_ids(today)
+    for row in rows:
+        row["no_access"] = row["student"].pk in blocked
     context = {
         "today": today,
         "rows": rows,

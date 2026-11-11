@@ -108,6 +108,14 @@ MESSAGE_TAGS = {message_constants.ERROR: "danger"}
 # Change only this number if the school decides to use another rule.
 DEBT_OVERDUE_DAYS = 7
 
+# "Спершу гроші": a student is NOT allowed to lessons ("Без допуску") when an invoice
+# is not paid and more than this number of days has passed after its due date.
+# Any group counts: a debt for Math also closes English.
+# Now it is the same as DEBT_OVERDUE_DAYS (rule "Б", chosen on 11.11.2026).
+# Example: the invoice for December is due 01.12 -> the student can come until 08.12,
+# from 09.12 the teacher sees "Без допуску". After the payment the mark disappears itself.
+ACCESS_BLOCK_DAYS = DEBT_OVERDUE_DAYS
+
 
 # Static files (CSS, JS, images)
 STATIC_URL = "static/"

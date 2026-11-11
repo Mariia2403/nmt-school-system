@@ -121,9 +121,7 @@
               <a href="{% url 'school:student_detail' c.student.pk %}" class="fw-semibold text-decoration-none">
                 {{ c.student.last_name }} {{ c.student.first_name }}
               </a>
-              {% if c.debt %}
-                <i class="bi bi-exclamation-circle-fill text-danger ms-1" title="Прострочена оплата"></i>
-              {% endif %}
+              {% if c.no_access %}<span class="badge text-bg-danger ms-1" title="Прострочена оплата: на заняття не допускати, батьків — до адміністратора"><i class="bi bi-slash-circle"></i> Без допуску</span>{% endif %}
               {% if c.status == "suspended" %}
                 <span class="badge text-bg-warning ms-1">призупинено</span>
               {% endif %}
