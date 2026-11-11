@@ -3,32 +3,79 @@
 {% block title %}Учні — Школа НМТ{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h1 class="h3 mb-0">Учні</h1>
-  {% if is_school_admin %}
-    <a href="{% url 'admin:school_student_add' %}" class="btn btn-primary btn-sm">
-      <i class="bi bi-plus-lg"></i> Додати учня
-    </a>
-  {% endif %}
+  <div class="d-flex gap-2">
+    <!-- Two views of the same search result -->
+    <div class="btn-group btn-group-sm" role="group">
+      <a href="?{{ querystring }}" class="btn btn-outline-secondary {% if view_mode == 'list' %}active{% endif %}">
+        <i class="bi bi-list-ul"></i> Списком
+      </a>
+      <a href="?{{ querystring }}{% if querystring %}&{% endif %}view=groups"
+         class="btn btn-outline-secondary {% if view_mode == 'groups' %}active{% endif %}">
+        <i class="bi bi-collection"></i> За групами
+      </a>
+    </div>
+    {% if is_school_admin %}
+      <a href="{% url 'admin:school_student_add' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Додати учня
+      </a>
+    {% endif %}
+  </div>
 </div>
 
 <!-- Search and filters: a GET form, so the filters stay in the address -->
 <form method="get" class="card card-body shadow-sm mb-3">
+  {% if view_mode == "groups" %}<input type="hidden" name="view" value="groups">{% endif %}
   <div class="row g-2 align-items-end">
-    <div class="col-md-4">
+    <div class="col-lg-4">
       <label class="form-label small text-muted mb-1">Пошук</label>
       <input type="text" name="q" value="{{ q }}" class="form-control"
-             placeholder="Прізвище, ім'я, телефон або дані батьків">
+             placeholder="Прізвище, ім'я, телефон (можна з дефісами) або дані батьків">
     </div>
-    <div class="col-6 col-md-2">
+    <div class="col-6 col-md-3 col-lg-2">
+      <label class="form-label small text-muted mb-1">Предмет</label>
+      <select name="subject" class="form-select">
+        <option value="">Усі</option>
+        {% for s in subjects %}
+          <option value="{{ s.pk }}" {% if subject_id == s.pk|stringformat:"d" %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-6 col-md-3 col-lg-3">
+      <label class="form-label small text-muted mb-1">Група</label>
+      <select name="group" class="form-select">
+        <option value="">Усі</option>
+        {% for g in groups %}
+          <option value="{{ g.pk }}" {% if group_id == g.pk|stringformat:"d" %}selected{% endif %}>
+            {{ g.full_name }}{% if g.end_date and g.end_date < today %} (завершена){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if is_school_admin %}
+    <div class="col-6 col-md-3 col-lg-3">
+      <label class="form-label small text-muted mb-1">Тариф</label>
+      <select name="tariff" class="form-select">
+        <option value="">Усі</option>
+        {% for t in tariffs %}
+          <option value="{{ t.pk }}" {% if tariff_id == t.pk|stringformat:"d" %}selected{% endif %}>
+            {{ t.name }} — {{ t.monthly_price|floatformat:"0g" }} ₴/міс{% if not t.is_active %} (архів){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div class="col-6 col-md-3 col-lg-2">
       <label class="form-label small text-muted mb-1">Статус</label>
       <select name="status" class="form-select">
         <option value="">Усі</option>
-        <option value="active" {% if status == "active" %}selected{% endif %}>Активні</option>
-        <option value="inactive" {% if status == "inactive" %}selected{% endif %}>Неактивні</option>
+        <option value="active" {% if status == "active" %}selected{% endif %}>Навчається</option>
+        <option value="paused" {% if status == "paused" %}selected{% endif %}>На паузі</option>
+        <option value="inactive" {% if status == "inactive" %}selected{% endif %}>Не навчається</option>
       </select>
     </div>
-    <div class="col-6 col-md-2">
+    <div class="col-6 col-md-3 col-lg-2">
       <label class="form-label small text-muted mb-1">Борг</label>
       <select name="debt" class="form-select">
         <option value="">Усі</option>
@@ -36,7 +83,7 @@
         <option value="noaccess" {% if debt_filter == "noaccess" %}selected{% endif %}>Без допуску</option>
       </select>
     </div>
-    <div class="col-6 col-md-2">
+    <div class="col-6 col-md-3 col-lg-2">
       <label class="form-label small text-muted mb-1">Клас</label>
       <select name="grade" class="form-select">
         <option value="">Усі</option>
@@ -45,9 +92,10 @@
         {% endfor %}
       </select>
     </div>
-    <div class="col-md-2 d-flex gap-2">
+    <div class="col-md-3 col-lg-2 d-flex gap-2">
       <button type="submit" class="btn btn-primary flex-fill"><i class="bi bi-search"></i> Знайти</button>
-      <a href="{% url 'school:student_list' %}" class="btn btn-outline-secondary" title="Скинути фільтри">
+      <a href="{% url 'school:student_list' %}{% if view_mode == 'groups' %}?view=groups{% endif %}"
+         class="btn btn-outline-secondary" title="Скинути фільтри">
         <i class="bi bi-x-lg"></i>
       </a>
     </div>
@@ -56,82 +104,94 @@
 
 <p class="text-muted small mb-2">Знайдено: {{ total_found }}</p>
 
-<div class="card shadow-sm">
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead class="table-light">
-        <tr>
-          <th>Учень</th>
-          <th>Клас</th>
-          <th>Телефон</th>
-          <th>Батьки</th>
-          <th>Групи</th>
-          <th class="text-end" title="Прострочено понад {{ overdue_days }} дн.">{% if is_school_admin %}Прострочений борг{% else %}Оплата{% endif %}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for student in page %}
-          <tr>
-            <td>
-              <a href="{% url 'school:student_detail' student.pk %}" class="fw-semibold text-decoration-none">
-                {{ student.last_name }} {{ student.first_name }}
-              </a>
-              {% if student.debt %}
-                <i class="bi bi-exclamation-circle-fill text-danger ms-1" title="Прострочена оплата"></i>
-              {% endif %}
-              {% if not student.has_active %}
-                <span class="badge text-bg-secondary ms-1">неактивний</span>
-              {% endif %}
-            </td>
-            <td>{{ student.grade }}</td>
-            <td class="text-nowrap">{{ student.phone|default:"—" }}</td>
-            <td>
-              <div>{{ student.parent_name|default:"—" }}</div>
-              <div class="small text-muted text-nowrap">{{ student.parent_phone }}</div>
-            </td>
-            <td>
-              {% for contract in student.active_contracts %}
-                <span class="badge text-bg-light border">{{ contract.group.full_name }}</span>
-              {% empty %}
-                <span class="text-muted">—</span>
-              {% endfor %}
-            </td>
-            <td class="text-end text-nowrap">
-              {% if student.debt and is_school_admin %}
-                <span class="text-danger fw-semibold">{{ student.debt|floatformat:"0g" }} ₴</span>
-              {% elif student.debt %}
-                <!-- A teacher sees only the fact of a debt, not the amount -->
-                <span class="badge text-bg-danger">є борг</span>
-              {% else %}
-                <span class="text-muted">—</span>
-              {% endif %}
-              {% if student.no_access %}<div><span class="badge text-bg-danger"><i class="bi bi-slash-circle"></i> Без допуску</span></div>{% endif %}
-            </td>
-          </tr>
-        {% empty %}
-          <tr><td colspan="6" class="text-center text-muted py-4">Нікого не знайдено.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
+{% if view_mode == "groups" %}
+  <!-- ───── View "За групами": one card per group ───── -->
+  {% for block in blocks %}
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white d-flex flex-wrap justify-content-between gap-2">
+        <a href="{% url 'school:group_detail' block.group.pk %}" class="fw-semibold text-decoration-none">
+          <i class="bi bi-collection"></i> {{ block.group.full_name }}
+        </a>
+        <span class="small text-muted">
+          {{ block.group.teacher }} · знайдено {{ block.rows|length }} з {{ block.group.max_students }} місць
+        </span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <tbody>
+            {% for row in block.rows %}
+              {% include "school/student_row.html" with student=row.student contract=row.contract %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endfor %}
+  {% if without_group %}
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white fw-semibold text-muted">
+        <i class="bi bi-person-dash"></i> Зараз не в групі ({{ without_group|length }})
+        <span class="small fw-normal">— не навчаються або всі договори завершені</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <tbody>
+            {% for student in without_group %}
+              {% include "school/student_row.html" with student=student contract=None %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+  {% if not blocks and not without_group %}
+    <div class="card card-body text-center text-muted">Нікого не знайдено. Спробуйте змінити фільтри.</div>
+  {% endif %}
 
-<!-- Pages: 20 students on one page -->
-{% if page.has_other_pages %}
-<nav class="mt-3">
-  <ul class="pagination justify-content-center">
-    {% if page.has_previous %}
-      <li class="page-item"><a class="page-link" href="?{{ querystring }}&page={{ page.previous_page_number }}">‹</a></li>
-    {% endif %}
-    {% for number in page.paginator.page_range %}
-      <li class="page-item {% if number == page.number %}active{% endif %}">
-        <a class="page-link" href="?{{ querystring }}&page={{ number }}">{{ number }}</a>
-      </li>
-    {% endfor %}
-    {% if page.has_next %}
-      <li class="page-item"><a class="page-link" href="?{{ querystring }}&page={{ page.next_page_number }}">›</a></li>
-    {% endif %}
-  </ul>
-</nav>
+{% else %}
+  <!-- ───── View "Списком": 20 students on a page ───── -->
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>Учень</th>
+            <th>Клас</th>
+            <th>Телефон</th>
+            <th>Батьки</th>
+            <th>Групи{% if is_school_admin %} і тарифи{% endif %}</th>
+            <th class="text-end" title="Прострочено понад {{ overdue_days }} дн.">{% if is_school_admin %}Прострочений борг{% else %}Оплата{% endif %}</th>
+            {% if is_school_admin %}<th></th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for student in page %}
+            {% include "school/student_row.html" with student=student contract=None show_groups=True %}
+          {% empty %}
+            <tr><td colspan="7" class="text-center text-muted py-4">Нікого не знайдено. Спробуйте змінити фільтри.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Pages: 20 students on one page -->
+  {% if page.has_other_pages %}
+  <nav class="mt-3">
+    <ul class="pagination justify-content-center flex-wrap">
+      {% if page.has_previous %}
+        <li class="page-item"><a class="page-link" href="?{{ querystring }}&page={{ page.previous_page_number }}">‹</a></li>
+      {% endif %}
+      {% for number in page.paginator.page_range %}
+        <li class="page-item {% if number == page.number %}active{% endif %}">
+          <a class="page-link" href="?{{ querystring }}&page={{ number }}">{{ number }}</a>
+        </li>
+      {% endfor %}
+      {% if page.has_next %}
+        <li class="page-item"><a class="page-link" href="?{{ querystring }}&page={{ page.next_page_number }}">›</a></li>
+      {% endif %}
+    </ul>
+  </nav>
+  {% endif %}
 {% endif %}
 {% endblock %}

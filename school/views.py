@@ -4,6 +4,7 @@ Every page is only for logged-in users with a role (see access.py):
 @staff_page  - administrator and teachers (a teacher sees only his own data),
 @admin_page  - only the administrator (money and debts).
 """
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -11,7 +12,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Avg, Count, DecimalField, Exists, F, OuterRef, Prefetch, Q, Sum, Value
+from django.db.models import Avg, Count, DecimalField, Exists, F, Func, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
@@ -23,7 +24,7 @@ from .access import (
 )
 from .models import (
     Attendance, Contract, ContractPause, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
-    Teacher, Test, TestResult, months_between, next_month,
+    Tariff, Teacher, Test, TestResult, months_between, next_month,
 )
 
 ZERO = Value(Decimal("0"))
@@ -210,38 +211,74 @@ def teacher_dashboard(request, teacher):
 
 @staff_page
 def student_list(request):
+    """List of students with search and filters.
+    Two views: "Списком" (20 students on a page) and "За групами" (blocks by group)."""
     today = timezone.localdate()
     q = request.GET.get("q", "").strip()
     status = request.GET.get("status", "")
     grade = request.GET.get("grade", "")
     debt_filter = request.GET.get("debt", "")
+    subject_id = request.GET.get("subject", "")
+    group_id = request.GET.get("group", "")
+    tariff_id = request.GET.get("tariff", "")
+    view_mode = "groups" if request.GET.get("view") == "groups" else "list"
+    is_school_admin = is_admin(request.user)
 
-    active_contract = Contract.objects.filter(student=OuterRef("pk"), status=Contract.Status.ACTIVE)
+    # Open contracts = the student studies now or is on pause (both keep a place in the group)
+    open_contracts = Contract.objects.filter(status__in=Contract.OPEN_STATUSES)
+    if not is_school_admin:
+        # A teacher sees only his groups, also inside a student row
+        open_contracts = open_contracts.filter(group__in=groups_for(request.user))
+    has_active = Exists(Contract.objects.filter(student=OuterRef("pk"), status=Contract.Status.ACTIVE))
+    has_suspended = Exists(Contract.objects.filter(student=OuterRef("pk"), status=Contract.Status.SUSPENDED))
     students = (
         # A teacher sees only students of his groups
         Student.objects.filter(pk__in=students_for(request.user))
-        .annotate(has_active=Exists(active_contract))
-        # Load active contracts with groups in ONE extra query (not one query per student)
+        .annotate(has_active=has_active, has_suspended=has_suspended)
+        # Open contracts with groups and tariffs in ONE extra query (not one query per student)
         .prefetch_related(Prefetch(
             "contracts",
-            queryset=Contract.objects.filter(status=Contract.Status.ACTIVE).select_related("group__subject"),
-            to_attr="active_contracts",
+            queryset=open_contracts.select_related("group__subject", "tariff").order_by("group__subject__name", "group__name"),
+            to_attr="open_contracts",
         ))
     )
 
-    # Search: every word must be found in one of the fields.
-    # "Шевченко Анна" finds Anna Shevchenko.
-    for word in q.split():
-        students = students.filter(
-            Q(last_name__icontains=word) | Q(first_name__icontains=word) | Q(phone__icontains=word)
-            | Q(parent_name__icontains=word) | Q(parent_phone__icontains=word)
-        )
-    if status == "active":
+    # Search. A phone is searched by digits only: "067-123-45-67", "(067) 123 45 67"
+    # and "0671234567" find the same "+380671234567".
+    digits = re.sub(r"\D", "", q)
+    if q and len(digits) >= 5 and not re.search(r"[^\d\s()+\-.]", q):
+        students = students.annotate(
+            phone_digits=Func(F("phone"), Value(r"\D"), Value(""), Value("g"), function="regexp_replace"),
+            parent_digits=Func(F("parent_phone"), Value(r"\D"), Value(""), Value("g"), function="regexp_replace"),
+        ).filter(Q(phone_digits__contains=digits) | Q(parent_digits__contains=digits))
+    else:
+        # Every word must be found in one of the fields: "Шевченко Анна" finds Anna Shevchenko
+        for word in q.split():
+            students = students.filter(
+                Q(last_name__icontains=word) | Q(first_name__icontains=word) | Q(phone__icontains=word)
+                | Q(parent_name__icontains=word) | Q(parent_phone__icontains=word)
+            )
+
+    # Status: the same three words everywhere
+    if status == "active":          # Навчається: at least one active contract
         students = students.filter(has_active=True)
-    elif status == "inactive":
-        students = students.filter(has_active=False)
+    elif status == "paused":        # На паузі: only paused contracts
+        students = students.filter(has_active=False, has_suspended=True)
+    elif status == "inactive":      # Не навчається: no open contracts
+        students = students.filter(has_active=False, has_suspended=False)
     if grade.isdigit():
         students = students.filter(grade=int(grade))
+
+    # Subject / group / tariff: the student has an OPEN contract with it
+    contract_filter = Q()
+    if subject_id.isdigit():
+        contract_filter &= Q(group__subject_id=int(subject_id))
+    if group_id.isdigit():
+        contract_filter &= Q(group_id=int(group_id))
+    if tariff_id.isdigit() and is_school_admin:
+        contract_filter &= Q(tariff_id=int(tariff_id))
+    if contract_filter:
+        students = students.filter(pk__in=open_contracts.filter(contract_filter).values("student_id"))
 
     # Debts are calculated once and used for the filter and for the table
     debts = debt_by_student(today)
@@ -251,28 +288,61 @@ def student_list(request):
     elif debt_filter == "noaccess":
         students = students.filter(pk__in=blocked)
 
-    total_found = students.count()
-    page = Paginator(students, 20).get_page(request.GET.get("page"))
-
-    # Add the debt to every student on this page
-    for student in page:
+    def add_marks(student):
         student.debt = debts.get(student, Decimal("0"))
         student.no_access = student.pk in blocked
+        return student
 
-    # Keep search and filters when the user goes to another page
+    total_found = students.count()
+    page = None
+    blocks = []
+    if view_mode == "groups":
+        # Blocks by group. A student in two groups is shown in both blocks.
+        found = {s.pk: add_marks(s) for s in students}
+        rows = (
+            open_contracts.filter(student_id__in=found.keys()).filter(contract_filter)
+            .select_related("group__subject", "group__teacher", "tariff")
+            .order_by("group__subject__name", "group__name", "student__last_name", "student__first_name")
+        )
+        by_group = {}
+        for contract in rows:
+            block = by_group.setdefault(contract.group_id, {"group": contract.group, "rows": []})
+            block["rows"].append({"student": found[contract.student_id], "contract": contract})
+        blocks = list(by_group.values())
+        in_groups = {row["student"].pk for block in blocks for row in block["rows"]}
+        without_group = [s for pk, s in found.items() if pk not in in_groups]
+    else:
+        page = Paginator(students, 20).get_page(request.GET.get("page"))
+        for student in page:
+            add_marks(student)
+        without_group = []
+
+    # Keep search and filters when the user goes to another page or changes the view
     params = request.GET.copy()
     params.pop("page", None)
+    params.pop("view", None)
 
+    groups = groups_for(request.user).select_related("subject").order_by("subject__name", "name")
     context = {
         "page": page,
+        "blocks": blocks,
+        "without_group": without_group,
+        "view_mode": view_mode,
         "total_found": total_found,
         "q": q,
         "status": status,
         "grade": grade,
         "debt_filter": debt_filter,
+        "subject_id": subject_id,
+        "group_id": group_id,
+        "tariff_id": tariff_id,
+        "subjects": subjects_for(request.user),
+        "groups": groups,
+        "tariffs": Tariff.objects.all() if is_school_admin else Tariff.objects.none(),
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         "grades": students_for(request.user).values_list("grade", flat=True).distinct().order_by("grade"),
         "querystring": params.urlencode(),
+        "today": today,
     }
     return render(request, "school/student_list.html", context)
 

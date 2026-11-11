@@ -1,0 +1,61 @@
+{% comment %}
+  One row of a student. Used by student_list.html in both views.
+  student   - a Student with .debt, .no_access, .has_active, .has_suspended, .open_contracts
+  contract  - (view "За групами") the contract of this group, or None
+  show_groups - (view "Списком") show all groups of the student
+{% endcomment %}
+<tr>
+  <td>
+    <a href="{% url 'school:student_detail' student.pk %}" class="fw-semibold text-decoration-none">
+      {{ student.last_name }} {{ student.first_name }}
+    </a>
+    <!-- Status: the same three words everywhere -->
+    {% if contract %}
+      {% if contract.status == "suspended" %}<span class="badge text-bg-warning ms-1">на паузі</span>{% endif %}
+    {% elif not student.has_active and student.has_suspended %}
+      <span class="badge text-bg-warning ms-1">на паузі</span>
+    {% elif not student.has_active %}
+      <span class="badge text-bg-secondary ms-1">не навчається</span>
+    {% endif %}
+  </td>
+  <td>{{ student.grade }} кл.</td>
+  <td class="text-nowrap">{{ student.phone|default:"—" }}</td>
+  <td>
+    <div>{{ student.parent_name|default:"—" }}</div>
+    <div class="small text-muted text-nowrap">{{ student.parent_phone }}</div>
+  </td>
+  {% if show_groups %}
+    <td>
+      {% for c in student.open_contracts %}
+        <div class="mb-1">
+          <span class="badge text-bg-light border {% if c.status == 'suspended' %}text-decoration-line-through{% endif %}"
+                {% if c.status == 'suspended' %}title="На паузі"{% endif %}>{{ c.group.full_name }}</span>
+          {% if is_school_admin %}<span class="small text-muted">{{ c.tariff.name }}</span>{% endif %}
+        </div>
+      {% empty %}
+        <span class="text-muted">—</span>
+      {% endfor %}
+    </td>
+  {% elif contract and is_school_admin %}
+    <td class="small text-muted">{{ contract.tariff.name }}{% if contract.discount_pct %} · знижка {{ contract.discount_pct|floatformat:"-2" }}%{% endif %}</td>
+  {% endif %}
+  <td class="text-end text-nowrap">
+    {% if student.debt and is_school_admin %}
+      <span class="text-danger fw-semibold">{{ student.debt|floatformat:"0g" }} ₴</span>
+    {% elif student.debt %}
+      <!-- A teacher sees only the fact of a debt, not the amount -->
+      <span class="badge text-bg-danger">є борг</span>
+    {% else %}
+      <span class="text-muted">—</span>
+    {% endif %}
+    {% if student.no_access %}<div><span class="badge text-bg-danger"><i class="bi bi-slash-circle"></i> Без допуску</span></div>{% endif %}
+  </td>
+  {% if is_school_admin %}
+    <td class="text-end">
+      <!-- Parents brought money: enter it right from the list -->
+      <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-outline-success btn-sm text-nowrap" title="Внести оплату">
+        <i class="bi bi-cash-coin"></i> Оплата
+      </a>
+    </td>
+  {% endif %}
+</tr>
