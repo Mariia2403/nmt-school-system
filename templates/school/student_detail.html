@@ -24,6 +24,9 @@
       <a href="{% url 'school:student_payment' student.pk %}" class="btn btn-success btn-sm">
         <i class="bi bi-cash-coin"></i> Внести оплату
       </a>
+      <a href="{% url 'school:enroll' %}?student={{ student.pk }}" class="btn btn-primary btn-sm">
+        <i class="bi bi-person-plus"></i> Записати в групу
+      </a>
       <a href="{% url 'admin:school_student_change' student.pk %}" class="btn btn-outline-primary btn-sm">
         <i class="bi bi-pencil"></i> Редагувати
       </a>

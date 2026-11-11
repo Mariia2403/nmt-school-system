@@ -1,0 +1,54 @@
+{% comment %}
+  Live line "До сплати" under every "Записати в групу" block.
+  It only HELPS the admin: the real invoices are made by the server after saving
+  (the first month by lessons, see Contract.month_charge).
+{% endcomment %}
+{{ prices|json_script:"enroll-prices" }}
+<script>
+  (function () {
+    var prices = JSON.parse(document.getElementById("enroll-prices").textContent);
+
+    function money(value) {
+      return Math.round(value).toLocaleString("uk-UA") + " ₴";
+    }
+
+    // Months between two dates, both months included: 2026-11-10 .. 2027-05-31 -> 7
+    function monthsBetween(start, end) {
+      var a = new Date(start), b = new Date(end);
+      return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1;
+    }
+
+    function field(block, name) {
+      var prefix = block.dataset.prefix ? block.dataset.prefix + "-" : "";
+      return block.querySelector('[name="' + prefix + name + '"]');
+    }
+
+    function update(block) {
+      var box = block.querySelector(".enroll-total");
+      var tariff = field(block, "tariff").value;
+      var group = prices.groups[field(block, "group").value];
+      var start = field(block, "start_date");
+      if (!tariff || !prices.tariffs[tariff]) { box.classList.add("d-none"); return; }
+
+      // The start cannot be before the group starts: move it for the admin
+      if (group && start.value && start.value < group.start) { start.value = group.start; }
+
+      var discount = parseFloat((field(block, "discount_pct").value || "0").replace(",", ".")) || 0;
+      var monthly = prices.tariffs[tariff] * (100 - discount) / 100;
+      var text = "До сплати: <strong>" + money(monthly) + " на місяць</strong>";
+      if (field(block, "payment_plan").value === "prepaid" && group && group.end && start.value) {
+        var months = monthsBetween(start.value, group.end);
+        text = "До сплати наперед: <strong>≈ " + money(monthly * months) + "</strong> за " + months + " міс.";
+      }
+      if (discount > 0) { text += " (зі знижкою " + discount + "%)"; }
+      box.innerHTML = text + '<div class="text-muted">Перший і останній неповні місяці рахуються за заняттями — точні суми будуть у картці учня.</div>';
+      box.classList.remove("d-none");
+    }
+
+    document.querySelectorAll(".enroll-block").forEach(function (block) {
+      block.addEventListener("change", function () { update(block); });
+      block.addEventListener("input", function () { update(block); });
+      update(block);
+    });
+  })();
+</script>

@@ -143,6 +143,24 @@ class Student(models.Model):
     # Now we can write Student.objects.active()
     objects = StudentQuerySet.as_manager()
 
+    @staticmethod
+    def normalize_phone(value):
+        """One format for all Ukrainian phones: +380XXXXXXXXX.
+        "067 123 45 67", "(067)123-45-67", "380671234567" -> "+380671234567".
+        Other numbers (for example, from another country) stay as they are."""
+        value = (value or "").strip()
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 10 and digits.startswith("0"):
+            return "+38" + digits
+        if len(digits) == 12 and digits.startswith("380"):
+            return "+" + digits
+        return value
+
+    def clean(self):
+        # The same format everywhere: then search and "same student" checks work
+        self.phone = self.normalize_phone(self.phone)
+        self.parent_phone = self.normalize_phone(self.parent_phone)
+
     class Meta:
         db_table = "students"
         verbose_name = "Учень"

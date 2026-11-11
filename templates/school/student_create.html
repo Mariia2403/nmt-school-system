@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Новий учень — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:student_list' %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До списку учнів
+</a>
+<h1 class="h3 mt-2 mb-3"><i class="bi bi-person-plus"></i> Новий учень</h1>
+
+<form method="post" novalidate>
+  {% csrf_token %}
+  <div class="row g-3">
+    <!-- Left: the student and the parents -->
+    <div class="col-lg-5">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-white fw-semibold">1. Учень і батьки</div>
+        <div class="card-body">
+          {% if student_form.non_field_errors %}
+            <div class="alert alert-danger py-2 small">{{ student_form.non_field_errors|join:" " }}</div>
+          {% endif %}
+          <div class="row g-2">
+            {% for field in student_form %}
+              <div class="{% if field.name == 'grade' %}col-4{% elif field.name == 'phone' %}col-8{% elif field.name == 'parent_name' %}col-12{% else %}col-sm-6{% endif %}">
+                <label class="form-label small mb-1" for="{{ field.id_for_label }}">
+                  {{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}
+                </label>
+                {{ field }}
+                {% for e in field.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
+              </div>
+            {% endfor %}
+          </div>
+          <p class="small text-muted mt-2 mb-0">Телефони можна вводити як завгодно: система збереже їх у форматі +380…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: 1-2 groups -->
+    <div class="col-lg-7">
+      <div class="card shadow-sm mb-3">
+        <div class="card-header bg-white fw-semibold">2. Записати в групу <span class="text-danger">*</span></div>
+        <div class="card-body">
+          {% include "school/enroll_fields.html" with f=enroll_forms.0 %}
+        </div>
+      </div>
+
+      <!-- The second group is optional: open it only if the student takes two subjects -->
+      {% with f=enroll_forms.1 %}
+      <details class="card shadow-sm" {% if f.is_bound and f.has_changed %}open{% endif %}>
+        <summary class="card-header bg-white fw-semibold text-primary" style="cursor: pointer;">
+          <i class="bi bi-plus-circle"></i> Ще одна група (не обов'язково)
+        </summary>
+        <div class="card-body">
+          {% include "school/enroll_fields.html" with f=f %}
+          <p class="small text-muted mt-2 mb-0">Якщо група не потрібна — залиште цей блок порожнім.</p>
+        </div>
+      </details>
+      {% endwith %}
+    </div>
+  </div>
+
+  <div class="d-flex gap-2 mt-3">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-check2-circle"></i> Зберегти і відкрити картку</button>
+    <a href="{% url 'school:student_list' %}" class="btn btn-outline-secondary">Скасувати</a>
+  </div>
+</form>
+
+{% include "school/enroll_script.html" %}
+{% endblock %}

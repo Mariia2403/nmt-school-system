@@ -18,6 +18,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
+from .forms import EnrollmentForm, StudentForm
 from .access import (
     ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
     get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
@@ -424,6 +425,113 @@ def student_detail(request, pk):
         "today": today,  # default date in the pause / leave forms
     }
     return render(request, "school/student_detail.html", context)
+
+
+def enrollment_summary(contract):
+    """Short text about a new contract for the success message:
+    "Математика · група 1 (Стандарт, 2 400 ₴/міс)"."""
+    if contract.payment_plan == Contract.PaymentPlan.PREPAID:
+        total = contract.invoices.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+        money = f"весь курс {total:,.0f} ₴".replace(",", " ")
+    else:
+        money = f"{contract.monthly_amount():,.0f} ₴/міс".replace(",", " ")
+    return f"{contract.group.full_name} ({contract.tariff.name}, {money})"
+
+
+def enrollment_prices():
+    """Data for the live "До сплати" line in the form (JavaScript):
+    tariff prices and group dates. Without amounts of any real person."""
+    tariffs = {str(t.pk): float(t.monthly_price) for t in Tariff.objects.filter(is_active=True)}
+    groups = {
+        str(g.pk): {"start": g.start_date.isoformat(), "end": g.end_date.isoformat() if g.end_date else ""}
+        for g in StudyGroup.objects.filter(end_date__gte=timezone.localdate())
+    }
+    return {"tariffs": tariffs, "groups": groups}
+
+
+def enrollment_initial(group_id):
+    """Start values for "Записати в групу": the group from the link and its start date."""
+    today = timezone.localdate()
+    initial = {"start_date": today}
+    group = StudyGroup.objects.filter(pk=group_id).first() if str(group_id).isdigit() else None
+    if group:
+        initial["group"] = group.pk
+        initial["start_date"] = max(today, group.start_date)
+    return initial
+
+
+@admin_page
+def student_create(request):
+    """Page "Новий учень": the student, the parents and 1-2 groups in ONE form.
+    Before: the admin panel, the start date by hand, full and finished groups in the list."""
+    group_id = request.GET.get("group", "")
+    if request.method == "POST":
+        student_form = StudentForm(request.POST)
+        first = EnrollmentForm(request.POST, prefix="g1", student=Student())
+        # The second group is not required: if nothing was changed in it, Django skips it
+        second = EnrollmentForm(request.POST, prefix="g2", student=Student(), empty_permitted=True,
+                                use_required_attribute=False, initial=enrollment_initial(""))
+        forms_ok = all([student_form.is_valid(), first.is_valid(), second.is_valid()])
+        # The same group in both blocks: show it at once, together with other errors
+        first_group = first.cleaned_data.get("group") if hasattr(first, "cleaned_data") else None
+        second_group = second.cleaned_data.get("group") if hasattr(second, "cleaned_data") else None
+        if second.has_changed() and first_group and first_group == second_group:
+            second.add_error("group", "Ця група вже вибрана вище.")
+            forms_ok = False
+        if forms_ok:
+            # atomic: the student and the contracts are saved together, or nothing is saved
+            with transaction.atomic():
+                student = student_form.save()
+                lines = []
+                for form in [first, second]:
+                    if form is second and not second.has_changed():
+                        continue
+                    contract = form.save(commit=False)
+                    contract.student = student
+                    contract.save()  # save() also creates the invoices
+                    lines.append(enrollment_summary(contract))
+            messages.success(request, f"Учня {student} додано і записано: " + "; ".join(lines) + ".")
+            return redirect("school:student_detail", pk=student.pk)
+        messages.error(request, "Перевірте поля, позначені червоним.")
+    else:
+        student_form = StudentForm()
+        first = EnrollmentForm(prefix="g1", student=Student(), initial=enrollment_initial(group_id))
+        second = EnrollmentForm(prefix="g2", student=Student(), empty_permitted=True,
+                                use_required_attribute=False, initial=enrollment_initial(""))
+
+    context = {
+        "student_form": student_form,
+        "enroll_forms": [first, second],
+        "prices": enrollment_prices(),
+    }
+    return render(request, "school/student_create.html", context)
+
+
+@admin_page
+def enroll(request):
+    """Page "Записати в групу" for a student who already exists.
+    From the student card (?student=5) the student is known, from a group page (?group=3) the group is known."""
+    student = Student.objects.filter(pk=request.GET.get("student") or 0).first()
+    group_id = request.GET.get("group", "")
+    if request.method == "POST":
+        form = EnrollmentForm(request.POST, student=student)
+        if form.is_valid():
+            with transaction.atomic():
+                contract = form.save()  # save() also creates the invoices
+            messages.success(request, f"{contract.student} записано: {enrollment_summary(contract)}.")
+            return redirect("school:student_detail", pk=contract.student_id)
+        messages.error(request, "Перевірте поля, позначені червоним.")
+    else:
+        form = EnrollmentForm(student=student, initial=enrollment_initial(group_id))
+
+    group = StudyGroup.objects.select_related("subject").filter(pk=group_id).first() if group_id.isdigit() else None
+    context = {
+        "form": form,
+        "student": student,
+        "group": group,
+        "prices": enrollment_prices(),
+    }
+    return render(request, "school/enroll.html", context)
 
 
 @admin_page

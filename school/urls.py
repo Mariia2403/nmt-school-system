@@ -11,6 +11,10 @@ app_name = "school"
 urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("students/", views.student_list, name="student_list"),
+    # A new student with 1-2 groups in one form
+    path("students/new/", views.student_create, name="student_create"),
+    # "Записати в групу" for a student who already exists (?student=5 or ?group=3)
+    path("enroll/", views.enroll, name="enroll"),
     # <int:pk> takes the number from the address, for example /students/5/ -> pk=5
     path("students/<int:pk>/", views.student_detail, name="student_detail"),
     # The administrator enters money from parents; the system splits it between invoices

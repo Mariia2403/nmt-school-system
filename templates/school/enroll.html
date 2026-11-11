@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Записати в групу — Школа НМТ{% endblock %}
+
+{% block content %}
+{% if student %}
+  <a href="{% url 'school:student_detail' student.pk %}" class="text-decoration-none small">
+    <i class="bi bi-arrow-left"></i> До картки учня
+  </a>
+{% elif group %}
+  <a href="{% url 'school:group_detail' group.pk %}" class="text-decoration-none small">
+    <i class="bi bi-arrow-left"></i> До групи
+  </a>
+{% endif %}
+
+<h1 class="h3 mt-2 mb-1"><i class="bi bi-person-plus"></i> Записати в групу</h1>
+<p class="text-muted mb-3">
+  {% if student %}{{ student.last_name }} {{ student.first_name }} · {{ student.grade }} клас{% endif %}
+  {% if group %}{{ group.full_name }}{% endif %}
+</p>
+
+<div class="row">
+  <div class="col-lg-8">
+    <form method="post" class="card card-body shadow-sm" novalidate>
+      {% csrf_token %}
+      {% include "school/enroll_fields.html" with f=form %}
+      <div class="d-flex flex-wrap gap-2 mt-3">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-check2-circle"></i> Записати</button>
+        {% if not student %}
+          <!-- A child who is not in the system yet -->
+          <a href="{% url 'school:student_create' %}{% if group %}?group={{ group.pk }}{% endif %}" class="btn btn-outline-primary">
+            <i class="bi bi-person-plus"></i> Це новий учень
+          </a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+
+{% include "school/enroll_script.html" %}
+{% endblock %}
