@@ -372,6 +372,8 @@ def student_detail(request, pk):
         .select_related("group__subject", "group__teacher", "tariff")
         # pauses and refund requests are shown under every contract
         .prefetch_related("group__schedule", "pauses", "refunds")
+        # How many payments: a contract without them can be deleted if it was created by mistake
+        .annotate(payments_count=Count("invoices__payments", distinct=True))
         .order_by("-start_date")
     )
 
@@ -710,11 +712,27 @@ def contract_action(request, pk, action):
     """Buttons of a contract in the student card (only POST):
     pause  - "Поставити на паузу" (first day without lessons + reason),
     resume - "Повернути з паузи" (first day of lessons after the pause),
-    leave  - "Учень пішов" (last day of studying).
+    leave  - "Учень пішов" (last day of studying),
+    delete - "Видалити помилковий договір" (only without payments and refunds).
     The money is recalculated in the model (Contract.pause / resume / terminate)."""
-    contract = get_object_or_404(Contract.objects.select_related("student", "group"), pk=pk)
+    contract = get_object_or_404(Contract.objects.select_related("student", "group", "tariff"), pk=pk)
     back = redirect("school:student_detail", pk=contract.student_id)
     if request.method != "POST":
+        return back
+
+    if action == "delete":
+        if not request.POST.get("confirm"):
+            messages.error(request, "Поставте галочку «Так, договір створено помилково».")
+            return back
+        name = f"№{contract.pk} «{contract.group.full_name}»"
+        try:
+            with transaction.atomic():
+                invoices = contract.delete_by_mistake()
+        except ValidationError as error:
+            messages.error(request, " ".join(error.messages))
+            return back
+        messages.success(request, f"Договір {name} видалено разом з рахунками ({invoices}). "
+                                  f"Відвідуваність і бали учня лишилися.")
         return back
 
     try:
@@ -1678,7 +1696,22 @@ def finance(request):
         (labels.get(row["category"], row["category"]), row["total"])
         for row in expenses.values("category").annotate(total=Sum("amount")).order_by("-total")
     ]
-    salaries = Salary.objects.filter(period_month=month).select_related("teacher").order_by("teacher__last_name")
+    salaries = list(Salary.objects.filter(period_month=month).select_related("teacher").order_by("teacher__last_name"))
+    # Lessons of this month that already started but are still "Заплановане": nobody marked them.
+    # The salary counts only held lessons, so these are NOT paid until the journal is filled.
+    unmarked_by_teacher = {
+        row["teacher"]: row["count"]
+        for row in Lesson.objects.filter(
+            starts_at__date__gte=month, starts_at__date__lt=end,
+            starts_at__lt=timezone.now(), status=Lesson.Status.PLANNED,
+        ).values("teacher").annotate(count=Count("id"))
+    }
+    for sal in salaries:
+        sal.unmarked = unmarked_by_teacher.get(sal.teacher_id, 0)
+    unmarked_teachers = [
+        (teacher, unmarked_by_teacher[teacher.pk])
+        for teacher in Teacher.objects.filter(pk__in=unmarked_by_teacher).order_by("last_name")
+    ]
     refunds = (
         Refund.objects
         .filter(
@@ -1718,6 +1751,8 @@ def finance(request):
         "expenses": expenses,
         "expenses_by_category": expenses_by_category,
         "salaries": salaries,
+        "unmarked_teachers": unmarked_teachers,
+        "unmarked_total": sum(unmarked_by_teacher.values()),
         "refunds": refunds,
         "debtors": debtors[:10],
         "debtors_count": len(debtors),

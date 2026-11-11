@@ -108,7 +108,7 @@
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-payments" type="button">Оплати <span class="badge text-bg-light border">{{ payments|length }}</span></button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-debtors" type="button">Боржники <span class="badge text-bg-danger">{{ debtors_count }}</span></button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-expenses" type="button">Витрати</button></li>
-  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-salaries" type="button">Зарплати</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-salaries" type="button">Зарплати{% if unmarked_total %} <span class="badge text-bg-danger" title="Невідмічені заняття">{{ unmarked_total }}</span>{% endif %}</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-refunds" type="button">Повернення</button></li>
   <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-year" type="button">Навчальний рік</button></li>
 </ul>
@@ -262,14 +262,28 @@
   <!-- Salaries -->
   <div class="tab-pane fade" id="tab-salaries">
     <p class="small text-muted">Зарплата за заняття, проведені в цьому місяці (виплачується на початку наступного).</p>
+    {% if unmarked_teachers %}
+      <!-- Before paying: lessons without marks are not in the salary -->
+      <div class="alert alert-warning small">
+        <i class="bi bi-exclamation-triangle"></i>
+        <strong>Є невідмічені заняття ({{ unmarked_total }}).</strong> Вони не входять у зарплату, доки викладач
+        не відмітить журнал (або заняття не позначать скасованим). Перевірте перед виплатою:
+        {% for teacher, count in unmarked_teachers %}
+          <span class="text-nowrap fw-semibold">{{ teacher }} — {{ count }}</span>{% if not forloop.last %}, {% endif %}
+        {% endfor %}.
+        <a href="{% url 'school:journal' %}" class="alert-link">Журнал →</a>
+        Після відмітки перерахуйте зарплату: Адмінка → Зарплати → «Перерахувати з проведених занять».
+      </div>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-sm align-middle mb-0">
-        <thead><tr><th>Викладач</th><th class="text-end">Занять</th><th class="text-end">Ставка</th><th class="text-end">База</th><th class="text-end">Премія</th><th class="text-end">Разом</th><th>Виплачено</th></tr></thead>
+        <thead><tr><th>Викладач</th><th class="text-end">Занять</th><th class="text-end">Не відмічено</th><th class="text-end">Ставка</th><th class="text-end">База</th><th class="text-end">Премія</th><th class="text-end">Разом</th><th>Виплачено</th></tr></thead>
         <tbody>
           {% for sal in salaries %}
             <tr>
               <td>{{ sal.teacher }}</td>
               <td class="text-end">{{ sal.lessons_count }}</td>
+              <td class="text-end">{% if sal.unmarked %}<span class="badge text-bg-warning">{{ sal.unmarked }}</span>{% else %}—{% endif %}</td>
               <td class="text-end text-nowrap">{{ sal.teacher.rate_per_lesson|floatformat:"0g" }} ₴</td>
               <td class="text-end text-nowrap">{{ sal.base_amount|floatformat:"0g" }} ₴</td>
               <td class="text-end text-nowrap">{% if sal.bonus %}{{ sal.bonus|floatformat:"0g" }} ₴{% else %}—{% endif %}</td>
@@ -280,7 +294,7 @@
               </td>
             </tr>
           {% empty %}
-            <tr><td colspan="7" class="text-muted">Зарплат за цей місяць ще немає.</td></tr>
+            <tr><td colspan="8" class="text-muted">Зарплат за цей місяць ще немає.</td></tr>
           {% endfor %}
         </tbody>
       </table>

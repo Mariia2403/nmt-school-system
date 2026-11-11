@@ -269,8 +269,23 @@
                       <button class="btn btn-outline-danger btn-sm">Розірвати договір</button>
                     </form>
                   </details>
-                {% else %}
+                {% elif c.payments_count or c.refunds.all %}
                   <span class="text-muted">—</span>
+                {% endif %}
+                {% if not c.payments_count and not c.refunds.all %}
+                  <!-- No money yet: a contract created by mistake can be deleted completely -->
+                  <details class="mt-1">
+                    <summary class="text-muted"><i class="bi bi-trash"></i> Видалити помилковий договір</summary>
+                    <form method="post" action="{% url 'school:contract_action' c.pk 'delete' %}" class="mt-2">
+                      {% csrf_token %}
+                      <div class="form-text mb-1">Оплат ще немає. Договір і його рахунки зникнуть; відвідуваність і бали лишаться.</div>
+                      <div class="form-check mb-1">
+                        <input class="form-check-input" type="checkbox" name="confirm" value="1" id="del-{{ c.pk }}" required>
+                        <label class="form-check-label" for="del-{{ c.pk }}">Так, договір створено помилково</label>
+                      </div>
+                      <button class="btn btn-outline-danger btn-sm">Видалити</button>
+                    </form>
+                  </details>
                 {% endif %}
               </td>
               {% endif %}

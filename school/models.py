@@ -1492,6 +1492,29 @@ class Contract(models.Model):
         price = self.tariff.subject_price
         return money_round(price * (Decimal("100") - self.discount_pct) / Decimal("100"))
 
+    def money_records_count(self):
+        """How many payments and refunds this contract has. If there is at least one,
+        the contract is real money: it is closed ("Учень пішов"), never deleted."""
+        return (Payment.objects.filter(invoice__contract=self).count()
+                + Refund.objects.filter(contract=self).count())
+
+    def delete_by_mistake(self):
+        """"Видалити помилковий договір": the student was enrolled into a wrong group,
+        or twice by mistake. Allowed only if there is NO money (no payments, no refunds).
+        Invoices and pauses are deleted together with the contract.
+        Attendance and test results stay: they belong to the student, not to the contract.
+        Returns how many invoices were deleted, or raises ValidationError."""
+        if self.money_records_count():
+            raise ValidationError(
+                "За цим договором уже є оплати або повернення — видалити не можна, бо зникнуть реальні "
+                "гроші з Фінансів. Якщо учень більше не вчиться, використайте «Учень пішов»."
+            )
+        invoices = self.invoices.count()
+        # Order matters: invoices first (PROTECT does not let us delete the contract before them)
+        self.invoices.all().delete()
+        self.delete()
+        return invoices
+
     def package_mates(self):
         """Other open contracts of the same package: the same student and the same package tariff.
         One student can have only one package of one tariff at a time."""
@@ -2007,6 +2030,17 @@ class Salary(models.Model):
             starts_at__month=self.period_month.month,
         ).count()
         self.base_amount = self.teacher.rate_per_lesson * self.lessons_count
+
+    def unmarked_lessons_count(self):
+        """Lessons of the teacher in this month that started, but nobody marked them
+        (still "Заплановане"). They are NOT in the salary until the journal is filled."""
+        return Lesson.objects.filter(
+            teacher_id=self.teacher_id,
+            status=Lesson.Status.PLANNED,
+            starts_at__lt=timezone.now(),
+            starts_at__year=self.period_month.year,
+            starts_at__month=self.period_month.month,
+        ).count()
 
     def _fill_defaults(self):
         self.period_month = first_day_of_month(self.period_month)

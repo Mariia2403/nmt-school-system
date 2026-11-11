@@ -16,7 +16,7 @@ from django.forms.models import BaseInlineFormSet
 from django.db.models import Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
-from .access import groups_for, is_office, students_for, subjects_for
+from .access import groups_for, is_admin, is_office, students_for, subjects_for
 from .models import (
     Attendance, Contract, ContractPause, ConversionRow, ConversionTable, DebtCall, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
@@ -138,6 +138,10 @@ class PaymentInline(admin.TabularInline):
     model = Payment
     extra = 1  # one empty row, ready for a new payment
     fields = ["amount", "paid_at", "method", "reserve_amount"]
+
+    def has_delete_permission(self, request, obj=None):
+        # A payment is real money: only the director may delete it (see PaymentAdmin)
+        return is_admin(request.user) and super().has_delete_permission(request, obj)
 
 
 # ───────────────────────── Reference data ─────────────────────────
@@ -522,10 +526,33 @@ class ContractAdmin(admin.ModelAdmin):
     inlines = [ContractPauseInline, InvoiceInline, RefundInline]
     actions = ["sync_invoices"]
 
+    def save_model(self, request, obj, form, change):
+        # Remember the invoices before saving: after a change of the discount we show what changed
+        if change and "discount_pct" in form.changed_data:
+            request._invoices_before = sum(obj.invoices.values_list("amount", flat=True), Decimal("0"))
+        super().save_model(request, obj, form, change)
+
     def save_related(self, request, form, formsets, change):
         # Pauses (inline) are saved after the contract: only now the invoices can follow them
         super().save_related(request, form, formsets, change)
-        form.instance.sync_invoices()
+        contract = form.instance
+        refunds_before = contract.refunds.count()
+        contract.sync_invoices()
+
+        before = getattr(request, "_invoices_before", None)
+        if before is None:
+            return
+        # The discount changed: tell the admin what happened with the money
+        after = sum(contract.invoices.values_list("amount", flat=True), Decimal("0"))
+        paid = Payment.objects.filter(invoice__contract=contract).count()
+        text = (f"Знижку змінено: рахунки за договором перераховано "
+                f"({before:.0f} → {after:.0f} грн разом).")
+        if paid:
+            text += (" Увага: за договором уже є оплати. Сплачені рахунки не зменшуються нижче сплаченої суми, "
+                     "тому нова знижка діє лише на неоплачені місяці.")
+        if contract.refunds.count() > refunds_before:
+            text += " Через переплату створено заявку на повернення (Фінанси → Повернення)."
+        self.message_user(request, text, messages.WARNING if paid else messages.INFO)
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("student", "group__subject", "tariff")
@@ -606,6 +633,11 @@ class PaymentAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("invoice__contract__student")
 
+    def has_delete_permission(self, request, obj=None):
+        # A deleted payment = the money "disappears" and the debt comes back.
+        # Only the director may do it, even if somebody gives the permission to another role.
+        return is_admin(request.user) and super().has_delete_permission(request, obj)
+
     @admin.display(description="Учень", ordering="invoice__contract__student__last_name")
     def student(self, obj):
         return obj.invoice.contract.student
@@ -663,7 +695,19 @@ class SalaryAdmin(admin.ModelAdmin):
 
     @admin.action(description="Перерахувати з проведених занять")
     def recalculate(self, request, queryset):
+        unmarked = []
         for salary in queryset.select_related("teacher"):
             salary.calculate_from_lessons()
             salary.save()
+            count = salary.unmarked_lessons_count()
+            if count:
+                unmarked.append(f"{salary.teacher} — {count}")
         self.message_user(request, f"Перераховано записів: {queryset.count()}")
+        if unmarked:
+            # Not marked lessons are not paid: the admin must see it before paying
+            self.message_user(
+                request,
+                "Невідмічені заняття не увійшли в зарплату: " + ", ".join(unmarked)
+                + ". Відмітьте журнал і перерахуйте ще раз.",
+                messages.WARNING,
+            )
