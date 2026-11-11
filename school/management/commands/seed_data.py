@@ -191,6 +191,14 @@ class Command(BaseCommand):
                 has_guarantee=True, guarantee_min_score=170, refund_pct=Decimal("30"),
             ),
         ]
+        # Packages: one price for 3 or 4 subjects, the family chooses the subjects.
+        # Not used for random students (see create_contracts), only for the demo student.
+        self.package_3 = Tariff.objects.create(
+            name="Пакет «3 предмети»", monthly_price=Decimal("6000"), lessons_per_month=8, subjects_count=3,
+        )
+        Tariff.objects.create(
+            name="Пакет «4 предмети» (повний НМТ)", monthly_price=Decimal("7600"), lessons_per_month=8, subjects_count=4,
+        )
         # An old tariff, not used for new contracts (to show the "is_active" flag)
         Tariff.objects.create(name="Базовий (архів)", monthly_price=Decimal("2000"),
                               lessons_per_month=8, is_active=False)
@@ -273,14 +281,37 @@ class Command(BaseCommand):
                 subjects_used.add(group.subject_id)
                 wanted -= 1
 
-        # A few contracts with other statuses, to make the data realistic
-        early = [c for c in self.contracts if c.start_date == c.group.start_date]
+        # A demo student with the package "3 предмети": 3 groups of different subjects
+        package_groups = []
+        for group in self.groups:
+            if taken[group.id] < group.max_students and group.subject_id not in {g.subject_id for g in package_groups}:
+                package_groups.append(group)
+        if len(package_groups) >= 3:
+            student = Student.objects.create(
+                last_name="Демченко", first_name="Олена", grade=11, phone="+380671110022",
+                parent_name="Демченко Наталія Петрівна", parent_phone="+380501110022",
+                registered_at=self.year_start,
+            )
+            self.students.append(student)
+            self.skill[student.id] = 165
+            for group in package_groups[:3]:
+                contract = Contract.objects.create(
+                    student=student, group=group, tariff=self.package_3, start_date=group.start_date,
+                )
+                self.contracts.append(contract)
+                taken[group.id] += 1
+
+        # A few contracts with other statuses, to make the data realistic.
+        # The demo package stays complete: we do not touch package contracts here.
+        early = [c for c in self.contracts if c.start_date == c.group.start_date and not c.tariff.is_package]
         monthly = [c for c in early if c.payment_plan == Contract.PaymentPlan.MONTHLY]
         for contract in random.sample(monthly, 2):
             contract.status = Contract.Status.TERMINATED
             contract.end_date = contract.start_date + timedelta(days=random.randint(20, 35))
             contract.save()  # the invoices after the end date are deleted automatically
-        suspended = random.choice([c for c in self.contracts if c.status == Contract.Status.ACTIVE])
+        suspended = random.choice([
+            c for c in self.contracts if c.status == Contract.Status.ACTIVE and not c.tariff.is_package
+        ])
         suspended.status = Contract.Status.SUSPENDED
         suspended.save()
 

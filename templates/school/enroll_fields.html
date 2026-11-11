@@ -1,7 +1,7 @@
 {% comment %}
-  Fields of one "Записати в групу" block: group, tariff, plan, discount, start date
+  Fields of one "Записати в групу" block: tariff, 1-4 groups, plan, discount, start date
   and the live line "До сплати". Used by student_create.html and enroll.html.
-  f = EnrollmentForm
+  f = EnrollmentForm. A package tariff shows 3 or 4 group fields (JavaScript in enroll_script.html).
 {% endcomment %}
 <div class="enroll-block" data-prefix="{{ f.prefix|default:'' }}">
   {% if f.non_field_errors %}<div class="alert alert-danger py-2 small">{{ f.non_field_errors|join:" " }}</div>{% endif %}
@@ -13,27 +13,37 @@
         {% for e in f.student.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
       </div>
     {% endif %}
-    <div class="col-md-7">
-      <label class="form-label small mb-1" for="{{ f.group.id_for_label }}">Група</label>
-      {{ f.group }}
-      {% for e in f.group.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
-    </div>
-    <div class="col-md-5">
-      <label class="form-label small mb-1" for="{{ f.start_date.id_for_label }}">Дата початку</label>
-      {{ f.start_date }}
-      {% for e in f.start_date.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
-    </div>
-    <div class="col-md-7">
+    <!-- The tariff goes first: it decides how many groups (subjects) we need -->
+    <div class="col-md-8">
       <label class="form-label small mb-1" for="{{ f.tariff.id_for_label }}">Тариф</label>
       {{ f.tariff }}
       {% for e in f.tariff.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
     </div>
-    <div class="col-7 col-md-3">
+    <div class="col-md-4">
+      <label class="form-label small mb-1" for="{{ f.start_date.id_for_label }}">Дата початку</label>
+      {{ f.start_date }}
+      {% for e in f.start_date.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
+    </div>
+
+    <!-- Groups: 1 for one subject, 3-4 for a package (slots 2-4 are hidden by JavaScript) -->
+    {% for field in f %}
+      {% if field.name == "group" or field.name == "group_2" or field.name == "group_3" or field.name == "group_4" %}
+        <div class="col-12 group-slot" data-slot="{% if field.name == 'group' %}1{% else %}{{ field.name|slice:'-1:' }}{% endif %}">
+          <label class="form-label small mb-1" for="{{ field.id_for_label }}">
+            <span class="slot-title">{% if field.name == "group" %}Група{% else %}Група — предмет {{ field.name|slice:'-1:' }}{% endif %}</span>
+          </label>
+          {{ field }}
+          {% for e in field.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    <div class="col-7 col-md-4">
       <label class="form-label small mb-1" for="{{ f.payment_plan.id_for_label }}">Оплата</label>
       {{ f.payment_plan }}
       {% for e in f.payment_plan.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
     </div>
-    <div class="col-5 col-md-2">
+    <div class="col-5 col-md-3">
       <label class="form-label small mb-1" for="{{ f.discount_pct.id_for_label }}">Знижка, %</label>
       {{ f.discount_pct }}
       {% for e in f.discount_pct.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}

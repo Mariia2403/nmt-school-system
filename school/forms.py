@@ -6,6 +6,7 @@ Django forms check the data AND call the model checks (Contract.clean): free pla
 old tariff, start before the group, etc. So the rules are the same as in the admin.
 """
 from django import forms
+from django.core.exceptions import ValidationError
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -59,7 +60,7 @@ class StudentForm(BootstrapMixin, forms.ModelForm):
 
 
 class GroupChoiceField(forms.ModelChoiceField):
-    """Groups in the list show free places: "Математика · група 1 — вільно 3 з 12"."""
+    """Groups in the list show free places: "Математика · група 1 — Бондар Олег — вільно 3 з 12"."""
 
     def label_from_instance(self, group):
         free = group.max_students - group.taken
@@ -68,63 +69,162 @@ class GroupChoiceField(forms.ModelChoiceField):
 
 
 class TariffChoiceField(forms.ModelChoiceField):
-    """Tariffs in the list show the price: "Стандарт — 2 400 ₴/міс, 8 занять"."""
+    """Tariffs in the list show the price:
+    "Стандарт — 2 400 ₴/міс" or "Пакет «3 предмети» — 6 000 ₴/міс за 3 предмети"."""
 
     def label_from_instance(self, tariff):
         price = f"{tariff.monthly_price:,.0f}".replace(",", " ")
+        what = f" за {tariff.subjects_count} предмети" if tariff.is_package else ""
         guarantee = " · з гарантією" if tariff.has_guarantee else ""
-        return f"{tariff.name} — {price} ₴/міс, {tariff.lessons_per_month} занять{guarantee}"
+        return f"{tariff.name} — {price} ₴/міс{what}{guarantee}"
 
 
-class EnrollmentForm(BootstrapMixin, forms.ModelForm):
-    """One contract = the student goes to one group.
-    student: if we already know the student (card of the student), the field is hidden.
+# Field names of groups: a package of 4 subjects needs 4 groups
+GROUP_FIELDS = ["group", "group_2", "group_3", "group_4"]
+
+
+class EnrollmentForm(BootstrapMixin, forms.Form):
+    """"Записати в групу": ONE tariff and its groups.
+    A tariff for one subject -> 1 group. A package of 3 (4) subjects -> 3 (4) groups of DIFFERENT subjects.
+    Every group becomes its own contract (journal, pauses, debts work per group as before).
+    If the student already studies a subject in the SAME group (for example, Math alone) and the
+    package includes it, this contract moves into the package (Contract.switch_tariff).
+
+    student: if we already know the student (card of the student), there is no student field.
     """
 
-    group = GroupChoiceField(queryset=StudyGroup.objects.none(), label="Група")
+    student = forms.ModelChoiceField(queryset=Student.objects.none(), label="Учень")
     tariff = TariffChoiceField(queryset=Tariff.objects.none(), label="Тариф")
-
-    class Meta:
-        model = Contract
-        fields = ["student", "group", "tariff", "payment_plan", "discount_pct", "start_date"]
-        widgets = {
-            "start_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
-            "discount_pct": forms.NumberInput(attrs={"min": 0, "max": 100, "step": "0.01"}),
-        }
-        labels = {"discount_pct": "Знижка, %"}
+    group = GroupChoiceField(queryset=StudyGroup.objects.none(), label="Група")
+    group_2 = GroupChoiceField(queryset=StudyGroup.objects.none(), label="Група — предмет 2", required=False)
+    group_3 = GroupChoiceField(queryset=StudyGroup.objects.none(), label="Група — предмет 3", required=False)
+    group_4 = GroupChoiceField(queryset=StudyGroup.objects.none(), label="Група — предмет 4", required=False)
+    payment_plan = forms.ChoiceField(choices=Contract.PaymentPlan.choices, label="Оплата",
+                                     initial=Contract.PaymentPlan.MONTHLY)
+    discount_pct = forms.DecimalField(label="Знижка, %", min_value=0, max_value=100, decimal_places=2,
+                                      initial=0, widget=forms.NumberInput(attrs={"step": "0.01"}))
+    start_date = forms.DateField(
+        label="Дата початку",
+        widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Якщо група стартує пізніше — візьметься дата старту групи. "
+                  "Перший неповний місяць рахується за заняттями.",
+    )
 
     def __init__(self, *args, student=None, **kwargs):
         super().__init__(*args, **kwargs)
         today = timezone.localdate()
         self.fixed_student = student
         if student is not None:
-            # The student is known: no field, we set it ourselves
+            # The student is known: no field, we use him ourselves
             del self.fields["student"]
-            self.instance.student = student
         else:
             self.fields["student"].queryset = Student.objects.order_by("last_name", "first_name")
-            self.fields["student"].label = "Учень"
 
         # Only groups that have not finished yet. "taken" = students who keep a place.
-        self.fields["group"].queryset = (
+        groups = (
             StudyGroup.objects.filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
             .select_related("subject", "teacher")
             .annotate(taken=Count("contracts", filter=Q(contracts__status__in=Contract.OPEN_STATUSES)))
             .order_by("subject__name", "name")
         )
-        self.fields["tariff"].queryset = Tariff.objects.filter(is_active=True)
+        for name in GROUP_FIELDS:
+            self.fields[name].queryset = groups
+        self.fields["tariff"].queryset = Tariff.objects.filter(is_active=True).order_by("subjects_count", "monthly_price")
         self.fields["start_date"].initial = today
-        self.fields["start_date"].help_text = "Не раніше старту групи. Перший місяць рахується за заняттями з цієї дати."
-        self.fields["payment_plan"].help_text = ""
+        self.planned = []  # [(contract, contract_it_replaces or None)] after is_valid()
         self.add_bootstrap()
+
+    def chosen_groups(self):
+        """[(field name, group)] for the groups this tariff needs."""
+        tariff = self.cleaned_data.get("tariff")
+        count = tariff.subjects_count if tariff else 1
+        return [(name, self.cleaned_data.get(name)) for name in GROUP_FIELDS[:count]]
 
     def clean(self):
         data = super().clean()
+        tariff = data.get("tariff")
         student = self.fixed_student or data.get("student")
-        group = data.get("group")
-        # A student cannot be in the same group twice
-        if student and student.pk and group and Contract.objects.filter(
-            student=student, group=group, status__in=Contract.OPEN_STATUSES
-        ).exists():
-            raise forms.ValidationError({"group": f"{student} уже навчається в цій групі."})
+        start = data.get("start_date")
+        if not tariff or not start or self.errors:
+            return data
+
+        # 1. Every subject of the package has a group, and the subjects are different
+        subjects = {}
+        for name, group in self.chosen_groups():
+            if group is None:
+                self.add_error(name, f"Оберіть групу: у тарифі {tariff.subjects_count} предмети.")
+            elif group.subject_id in subjects:
+                self.add_error(name, f"«{group.subject.name}» уже вибрано. У пакеті — різні предмети.")
+            else:
+                subjects[group.subject_id] = group
+        if self.errors:
+            return data
+
+        # 2. Build the contracts and check them with the model rules (free places, dates, one subject once)
+        self.planned = []
+        for name, group in self.chosen_groups():
+            replaces = None
+            if student is not None and student.pk:
+                replaces = Contract.objects.filter(
+                    student=student, group=group, status__in=Contract.OPEN_STATUSES
+                ).select_related("tariff").first()
+                if replaces is not None and replaces.tariff_id == tariff.pk:
+                    self.add_error(name, f"{student} уже навчається в цій групі за цим тарифом.")
+                    continue
+            contract = Contract(
+                group=group, tariff=tariff, payment_plan=data["payment_plan"],
+                discount_pct=data["discount_pct"],
+                # A group can start later than the chosen day: then we take the group start
+                start_date=max(start, group.start_date),
+            )
+            if student is not None and student.pk:
+                contract.student = student
+            if replaces is not None:
+                contract._replaces = replaces  # Math alone -> Math in the package (same group)
+            # Without "student": a new student is not saved yet, and when a contract replaces
+            # the old one in the same group, the database rule "one open contract per group"
+            # would see the old one (it closes only when we save). Contract.clean still checks
+            # free places and "one subject once" with the student.
+            exclude = ["student"] if (replaces is not None or not (student and student.pk)) else None
+            try:
+                contract.full_clean(exclude=exclude)
+            except ValidationError as error:
+                for field, messages in error.message_dict.items():
+                    self.add_error(name if field in ("group", "start_date", "end_date", "__all__") else
+                                   (field if field in self.fields else None), messages)
+                continue
+            self.planned.append((contract, replaces))
         return data
+
+    def subject_ids(self):
+        """Subjects of this block: to check that two blocks do not repeat a subject."""
+        return {contract.group.subject_id for contract, _ in self.planned}
+
+    def save(self, student):
+        """Save the contracts (call inside transaction.atomic). Returns the new contracts."""
+        saved = []
+        for contract, replaces in self.planned:
+            if replaces is not None:
+                # The same group, another tariff: old price before the start, new price after
+                saved.append(replaces.switch_tariff(contract.tariff, contract.start_date, contract.discount_pct))
+            else:
+                contract.student = student
+                contract.save()  # save() also creates the invoices
+                saved.append(contract)
+        return saved
+
+
+class SwitchTariffForm(BootstrapMixin, forms.Form):
+    """A package broke (the student left one subject): the other subjects of the package
+    move to a tariff for one subject from the chosen day (rule "Б", 11.11.2026)."""
+
+    tariff = TariffChoiceField(queryset=Tariff.objects.none(), label="Новий тариф для решти предметів")
+    from_day = forms.DateField(
+        label="З якої дати", widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+        help_text="Зазвичай — 1-ше число наступного місяця: поточний місяць лишається за ціною пакета.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["tariff"].queryset = Tariff.objects.filter(is_active=True, subjects_count=1)
+        self.add_bootstrap()

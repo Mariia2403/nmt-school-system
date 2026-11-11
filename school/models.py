@@ -966,6 +966,15 @@ class Tariff(models.Model):
         "Відсоток повернення", default=Decimal("0"), validators=PERCENT_VALIDATORS, **PERCENT
     )
     is_active = models.BooleanField("Діючий", default=True)
+    # 1 = one subject. 3 or 4 = a package: the family chooses the subjects,
+    # monthly_price is the price of the WHOLE package, every subject pays its part.
+    subjects_count = models.PositiveSmallIntegerField(
+        "Предметів у тарифі", default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(4)],
+        help_text="1 — окремий предмет. 3 або 4 — пакет: ціна за місяць — за весь пакет, "
+                  "предмети обирає родина. Змінювати, коли на тарифі вже є учні, не варто: "
+                  "зміняться майбутні рахунки.",
+    )
 
     class Meta:
         db_table = "tariffs"
@@ -989,10 +998,27 @@ class Tariff(models.Model):
                 name="tariffs_guarantee_needs_score",
                 violation_error_message="Для тарифу з гарантією вкажіть мінімальний бал НМТ (100–200).",
             ),
+            models.CheckConstraint(
+                condition=Q(subjects_count__gte=1, subjects_count__lte=4),
+                name="tariffs_subjects_count_1_4",
+                violation_error_message="Предметів у тарифі — від 1 до 4.",
+            ),
         ]
 
     def __str__(self):
+        if self.is_package:
+            return f"{self.name} — {self.monthly_price} грн/міс за {self.subjects_count} предмети"
         return f"{self.name} — {self.monthly_price} грн/міс"
+
+    @property
+    def is_package(self):
+        """A package = more than one subject for one price."""
+        return self.subjects_count > 1
+
+    @property
+    def subject_price(self):
+        """Price of ONE subject per month: 6000 grn / 3 subjects -> 2000 grn."""
+        return money_round(self.monthly_price / max(self.subjects_count, 1))
 
 
 class Contract(models.Model):
@@ -1096,13 +1122,33 @@ class Contract(models.Model):
         if self._state.adding and self.tariff_id and not self.tariff.is_active:
             raise ValidationError({"tariff": "Цей тариф більше не діє."})
 
+        # A contract that this one replaces (switch_tariff): it gives its place and its subject
+        replaces = getattr(self, "_replaces", None)
+        others = Contract.objects.filter(status__in=self.OPEN_STATUSES).exclude(pk=self.pk)
+        if replaces is not None:
+            others = others.exclude(pk=replaces.pk)
+
+        # One student studies one subject only once at a time.
+        # Example: Math alone AND Math inside a package -> the family pays twice for one subject.
+        if self.student_id and self.group_id:
+            same = others.filter(student_id=self.student_id, group__subject_id=self.group.subject_id).select_related("group__subject").first()
+            if same:
+                raise ValidationError({"group": (
+                    f"{self.student} уже вивчає «{same.group.subject.name}» ({same.group.full_name}). "
+                    "Один предмет — лише один раз. Щоб перевести його в пакет, оберіть ту саму групу в пакеті."
+                )})
+
+        # One package of one tariff: not more subjects than the package has
+        if self.student_id and self.tariff_id and self.tariff.is_package and self.status in self.OPEN_STATUSES:
+            in_package = others.filter(student_id=self.student_id, tariff_id=self.tariff_id).count()
+            if in_package >= self.tariff.subjects_count:
+                raise ValidationError({"tariff": (
+                    f"У пакеті «{self.tariff.name}» уже {in_package} предмети з {self.tariff.subjects_count}."
+                )})
+
         # Check that the group is not full
         if self.group_id and self.status in self.OPEN_STATUSES:
-            taken = (
-                Contract.objects.filter(group_id=self.group_id, status__in=self.OPEN_STATUSES)
-                .exclude(pk=self.pk)
-                .count()
-            )
+            taken = others.filter(group_id=self.group_id).count()
             if taken >= self.group.max_students:
                 raise ValidationError({"group": "У групі немає вільних місць."})
 
@@ -1214,9 +1260,52 @@ class Contract(models.Model):
     # ───── Money plan ─────
 
     def monthly_amount(self):
-        """Price for one month with the discount."""
-        price = self.tariff.monthly_price
+        """Price of THIS subject for one month, with the discount.
+        A package is divided between its subjects: package 6000 grn for 3 subjects -> 2000 grn."""
+        price = self.tariff.subject_price
         return money_round(price * (Decimal("100") - self.discount_pct) / Decimal("100"))
+
+    def package_mates(self):
+        """Other open contracts of the same package: the same student and the same package tariff.
+        One student can have only one package of one tariff at a time."""
+        if not self.tariff.is_package:
+            return Contract.objects.none()
+        return Contract.objects.filter(
+            student_id=self.student_id, tariff_id=self.tariff_id, status__in=self.OPEN_STATUSES,
+        ).exclude(pk=self.pk)
+
+    def switch_tariff(self, new_tariff, from_day, discount_pct=None):
+        """Move this subject to another tariff from from_day, in the same group.
+        This contract ends on from_day - 1 (status "Завершений"), a new one starts on from_day.
+        So months before keep the old price, months after get the new price.
+        Examples: Math alone -> into a package; a subject of a broken package -> its own tariff.
+        Returns the new contract."""
+        if self.status not in self.OPEN_STATUSES:
+            raise ValidationError("Договір уже не діє.")
+        new_contract = Contract(
+            student_id=self.student_id, group_id=self.group_id, tariff=new_tariff,
+            payment_plan=self.payment_plan, start_date=from_day,
+            discount_pct=self.discount_pct if discount_pct is None else discount_pct,
+        )
+        new_contract._replaces = self  # the old one gives its place to the new one (see clean)
+        new_contract.full_clean(exclude=["student"])
+
+        if from_day <= self.start_date:
+            # The contract has not started yet: just change the tariff, no history needed
+            self.tariff = new_tariff
+            self.discount_pct = new_contract.discount_pct
+            self.save()
+            return self
+        pause = self.open_pause()
+        if pause is not None:
+            pause.end_date = max(pause.start_date, from_day - timedelta(days=1))
+            pause.save()
+        self.status = self.Status.COMPLETED
+        self.end_date = from_day - timedelta(days=1)
+        self.save()
+        self.settle_overpayment(Refund.Reason.OVERPAYMENT)
+        new_contract.save()
+        return new_contract
 
     def lesson_price(self):
         """Price of one lesson = month price / lessons per month in the tariff.

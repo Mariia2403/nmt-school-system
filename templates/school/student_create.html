@@ -38,7 +38,7 @@
     <!-- Right: 1-2 groups -->
     <div class="col-lg-7">
       <div class="card shadow-sm mb-3">
-        <div class="card-header bg-white fw-semibold">2. Записати в групу <span class="text-danger">*</span></div>
+        <div class="card-header bg-white fw-semibold">2. Тариф і групи <span class="text-danger">*</span> <span class="small fw-normal text-muted">— окремий предмет або пакет на 3–4 предмети</span></div>
         <div class="card-body">
           {% include "school/enroll_fields.html" with f=enroll_forms.0 %}
         </div>
@@ -48,11 +48,11 @@
       {% with f=enroll_forms.1 %}
       <details class="card shadow-sm" {% if f.is_bound and f.has_changed %}open{% endif %}>
         <summary class="card-header bg-white fw-semibold text-primary" style="cursor: pointer;">
-          <i class="bi bi-plus-circle"></i> Ще одна група (не обов'язково)
+          <i class="bi bi-plus-circle"></i> Ще один тариф — інший предмет (не обов'язково)
         </summary>
         <div class="card-body">
           {% include "school/enroll_fields.html" with f=f %}
-          <p class="small text-muted mt-2 mb-0">Якщо група не потрібна — залиште цей блок порожнім.</p>
+          <p class="small text-muted mt-2 mb-0">Наприклад, пакет у першому блоці і ще один окремий предмет тут. Якщо не потрібно — залиште порожнім.</p>
         </div>
       </details>
       {% endwith %}

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}Тарифи — Школа НМТ{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+  <h1 class="h3 mb-0"><i class="bi bi-tags"></i> Тарифи</h1>
+  <!-- Tariffs change rarely, so adding and editing stay in the admin -->
+  <a href="{% url 'admin:school_tariff_add' %}" class="btn btn-primary btn-sm">
+    <i class="bi bi-plus-lg"></i> Додати тариф
+  </a>
+</div>
+<p class="text-muted mb-4">
+  Навчаються зараз: <strong>{{ total_students }}</strong> учнів ({{ total_contracts }} договорів) ·
+  до оплати щомісяця: <strong>{{ total_money|floatformat:"0g" }} ₴</strong> (зі знижками).
+  Кожен предмет — окремий договір у своїй групі (у пакеті теж), тому договорів більше, ніж учнів.
+</p>
+
+<h2 class="h5"><i class="bi bi-1-circle"></i> Окремий предмет</h2>
+<div class="row g-3 mb-4">
+  {% for t in active_tariffs %}
+    <div class="col-md-6 col-xl-4">
+      <div class="card shadow-sm h-100 {% if t.has_guarantee %}border-success{% endif %}">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+          <span class="fw-semibold">{{ t.name }}</span>
+          {% if t.has_guarantee %}<span class="badge text-bg-success"><i class="bi bi-shield-check"></i> з гарантією</span>{% endif %}
+        </div>
+        <div class="card-body">
+          <!-- Price -->
+          <div class="display-6 fw-semibold">{{ t.monthly_price|floatformat:"0g" }} ₴<span class="fs-6 text-muted fw-normal"> / міс</span></div>
+          {% if t.is_package %}
+            <div class="small mb-1"><strong>{{ t.subject_price|floatformat:"0g" }} ₴</strong> за один предмет</div>
+          {% endif %}
+          <div class="small text-muted mb-3">
+            одне заняття{% if t.is_package %} одного предмета{% endif %} — {{ t.lesson_price|floatformat:"0g" }} ₴
+            <i class="bi bi-info-circle" title="За цією ціною рахуються неповні місяці: старт посеред місяця, пауза, учень пішов"></i>
+          </div>
+
+          <!-- What is included -->
+          <h2 class="h6 text-muted mb-2">Що входить</h2>
+          <ul class="list-unstyled small mb-3">
+            {% if t.is_package %}
+              <li><i class="bi bi-box-seam text-primary"></i> <strong>{{ t.subjects_count }} предмети на вибір</strong> — родина обирає, які саме</li>
+              <li><i class="bi bi-calendar-check text-primary"></i> {{ t.lessons_per_month }} занять на місяць з кожного предмета</li>
+            {% else %}
+              <li><i class="bi bi-calendar-check text-primary"></i> один предмет, {{ t.lessons_per_month }} занять на місяць</li>
+            {% endif %}
+            {% if t.has_guarantee %}
+              <li class="mt-1">
+                <i class="bi bi-shield-check text-success"></i>
+                <strong>Гарантія:</strong> якщо на НМТ менше <strong>{{ t.guarantee_min_score }}</strong> балів,
+                школа повертає <strong>{{ t.refund_pct|floatformat:"-2" }}%</strong> оплати
+                <div class="text-muted ms-3">з кожної оплати {{ t.refund_pct|floatformat:"-2" }}% іде в резерв</div>
+              </li>
+            {% else %}
+              <li class="text-muted"><i class="bi bi-dash-circle"></i> без гарантії результату</li>
+            {% endif %}
+          </ul>
+
+          <!-- Who studies on it -->
+          <h2 class="h6 text-muted mb-2">Хто на тарифі</h2>
+          <div class="d-flex align-items-baseline gap-2 mb-1">
+            <span class="h4 mb-0">{{ t.student_count }}</span>
+            <span class="small text-muted">
+              учнів · договорів: {{ t.active_count }} діючих{% if t.paused_count %}, {{ t.paused_count }} на паузі{% endif %}
+            </span>
+          </div>
+          {% if t.subjects %}
+            <div class="mb-2">
+              {% for subject, count in t.subjects %}
+                <span class="badge text-bg-light border">{{ subject }}: {{ count }}</span>
+              {% endfor %}
+            </div>
+          {% endif %}
+          <div class="small text-muted">До оплати від них щомісяця: <strong class="text-body">{{ t.month_money|floatformat:"0g" }} ₴</strong></div>
+        </div>
+        <div class="card-footer bg-white d-flex justify-content-between">
+          <a href="{% url 'school:student_list' %}?tariff={{ t.pk }}" class="small text-decoration-none {% if not t.student_count %}disabled text-muted pe-none{% endif %}">
+            <i class="bi bi-people"></i> Показати учнів
+          </a>
+          <a href="{% url 'admin:school_tariff_change' t.pk %}" class="small text-decoration-none text-muted">
+            <i class="bi bi-pencil"></i> Редагувати
+          </a>
+        </div>
+      </div>
+    </div>
+  {% empty %}
+    <div class="col-12">
+      <div class="card card-body text-muted">
+        Тарифів на один предмет немає. Без них не можна записати учня на окремий предмет — натисніть «Додати тариф».
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+<h2 class="h5"><i class="bi bi-box-seam"></i> Пакети</h2>
+<p class="small text-muted">Одна ціна за 3–4 предмети. Кожен предмет — у своїй групі; один предмет не можна взяти двічі
+  (окремо і в пакеті). Якщо учень кидає предмет, решта з наступного місяця переходить на окремий тариф.</p>
+<div class="row g-3 mb-4">
+  {% for t in packages %}
+    <div class="col-md-6 col-xl-4">
+      <div class="card shadow-sm h-100 {% if t.has_guarantee %}border-success{% endif %}">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center">
+          <span class="fw-semibold">{{ t.name }}</span>
+          {% if t.has_guarantee %}<span class="badge text-bg-success"><i class="bi bi-shield-check"></i> з гарантією</span>{% endif %}
+        </div>
+        <div class="card-body">
+          <!-- Price -->
+          <div class="display-6 fw-semibold">{{ t.monthly_price|floatformat:"0g" }} ₴<span class="fs-6 text-muted fw-normal"> / міс</span></div>
+          {% if t.is_package %}
+            <div class="small mb-1"><strong>{{ t.subject_price|floatformat:"0g" }} ₴</strong> за один предмет</div>
+          {% endif %}
+          <div class="small text-muted mb-3">
+            одне заняття{% if t.is_package %} одного предмета{% endif %} — {{ t.lesson_price|floatformat:"0g" }} ₴
+            <i class="bi bi-info-circle" title="За цією ціною рахуються неповні місяці: старт посеред місяця, пауза, учень пішов"></i>
+          </div>
+
+          <!-- What is included -->
+          <h2 class="h6 text-muted mb-2">Що входить</h2>
+          <ul class="list-unstyled small mb-3">
+            {% if t.is_package %}
+              <li><i class="bi bi-box-seam text-primary"></i> <strong>{{ t.subjects_count }} предмети на вибір</strong> — родина обирає, які саме</li>
+              <li><i class="bi bi-calendar-check text-primary"></i> {{ t.lessons_per_month }} занять на місяць з кожного предмета</li>
+            {% else %}
+              <li><i class="bi bi-calendar-check text-primary"></i> один предмет, {{ t.lessons_per_month }} занять на місяць</li>
+            {% endif %}
+            {% if t.has_guarantee %}
+              <li class="mt-1">
+                <i class="bi bi-shield-check text-success"></i>
+                <strong>Гарантія:</strong> якщо на НМТ менше <strong>{{ t.guarantee_min_score }}</strong> балів,
+                школа повертає <strong>{{ t.refund_pct|floatformat:"-2" }}%</strong> оплати
+                <div class="text-muted ms-3">з кожної оплати {{ t.refund_pct|floatformat:"-2" }}% іде в резерв</div>
+              </li>
+            {% else %}
+              <li class="text-muted"><i class="bi bi-dash-circle"></i> без гарантії результату</li>
+            {% endif %}
+          </ul>
+
+          <!-- Who studies on it -->
+          <h2 class="h6 text-muted mb-2">Хто на тарифі</h2>
+          <div class="d-flex align-items-baseline gap-2 mb-1">
+            <span class="h4 mb-0">{{ t.student_count }}</span>
+            <span class="small text-muted">
+              учнів · договорів: {{ t.active_count }} діючих{% if t.paused_count %}, {{ t.paused_count }} на паузі{% endif %}
+            </span>
+          </div>
+          {% if t.subjects %}
+            <div class="mb-2">
+              {% for subject, count in t.subjects %}
+                <span class="badge text-bg-light border">{{ subject }}: {{ count }}</span>
+              {% endfor %}
+            </div>
+          {% endif %}
+          <div class="small text-muted">До оплати від них щомісяця: <strong class="text-body">{{ t.month_money|floatformat:"0g" }} ₴</strong></div>
+        </div>
+        <div class="card-footer bg-white d-flex justify-content-between">
+          <a href="{% url 'school:student_list' %}?tariff={{ t.pk }}" class="small text-decoration-none {% if not t.student_count %}disabled text-muted pe-none{% endif %}">
+            <i class="bi bi-people"></i> Показати учнів
+          </a>
+          <a href="{% url 'admin:school_tariff_change' t.pk %}" class="small text-decoration-none text-muted">
+            <i class="bi bi-pencil"></i> Редагувати
+          </a>
+        </div>
+      </div>
+    </div>
+  {% empty %}
+    <div class="col-12">
+      <div class="card card-body text-muted">
+        Пакетів поки немає. Щоб додати: «Додати тариф» → «Предметів у тарифі» = 3 або 4, «Ціна за місяць» — за весь пакет.
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% if old_tariffs %}
+  <!-- Old tariffs: new students cannot get them, but old contracts still use them -->
+  <h2 class="h5 text-muted"><i class="bi bi-archive"></i> Архів</h2>
+  <p class="small text-muted">Нових учнів на ці тарифи записати не можна. Ті, хто вже навчається, доплачують за старою ціною.</p>
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table align-middle mb-0 text-muted">
+        <thead class="table-light">
+          <tr><th>Тариф</th><th class="text-end">Ціна / міс</th><th class="text-end">Занять</th><th class="text-end">Ще навчаються</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for t in old_tariffs %}
+            <tr>
+              <td>{{ t.name }}</td>
+              <td class="text-end">{{ t.monthly_price|floatformat:"0g" }} ₴</td>
+              <td class="text-end">{{ t.lessons_per_month }}</td>
+              <td class="text-end">
+                {% if t.student_count %}
+                  <a href="{% url 'school:student_list' %}?tariff={{ t.pk }}" class="text-decoration-none">{{ t.student_count }}</a>
+                {% else %}0{% endif %}
+              </td>
+              <td class="text-end"><a href="{% url 'admin:school_tariff_change' t.pk %}" class="small text-muted"><i class="bi bi-pencil"></i></a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

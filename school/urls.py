@@ -15,6 +15,8 @@ urlpatterns = [
     path("students/new/", views.student_create, name="student_create"),
     # "Записати в групу" for a student who already exists (?student=5 or ?group=3)
     path("enroll/", views.enroll, name="enroll"),
+    # A package became incomplete: move the other subjects to a tariff for one subject
+    path("students/<int:pk>/package/<int:tariff_id>/break/", views.package_break, name="package_break"),
     # <int:pk> takes the number from the address, for example /students/5/ -> pk=5
     path("students/<int:pk>/", views.student_detail, name="student_detail"),
     # The administrator enters money from parents; the system splits it between invoices
@@ -35,6 +37,8 @@ urlpatterns = [
     path("debts/call-list/", views.call_list, name="call_list"),
     # Money of the school. The month is in the address: /finance/?month=2026-10
     path("finance/", views.finance, name="finance"),
+    # What is in every tariff, the price and who studies on it (only the administrator)
+    path("tariffs/", views.tariff_list, name="tariff_list"),
     # Logins of teachers and administrators (only for the administrator)
     path("access/", views.staff_accounts, name="staff_accounts"),
 ]

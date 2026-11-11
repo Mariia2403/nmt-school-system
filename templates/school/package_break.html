@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Перевести на окремий тариф — Школа НМТ{% endblock %}
+
+{% block content %}
+<a href="{% url 'school:student_detail' student.pk %}" class="text-decoration-none small">
+  <i class="bi bi-arrow-left"></i> До картки учня
+</a>
+<h1 class="h3 mt-2 mb-1"><i class="bi bi-arrow-left-right"></i> Перевести на окремий тариф</h1>
+<p class="text-muted mb-3">{{ student.last_name }} {{ student.first_name }} · {{ tariff.name }}</p>
+
+<div class="row g-3">
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white fw-semibold">Чому</div>
+      <div class="card-body small">
+        <p>Знижка пакета діє, лише поки учень бере <strong>усі {{ tariff.subjects_count }} предмети</strong>.
+          Зараз у пакеті лишилось {{ contracts|length }}:</p>
+        <ul>
+          {% for c in contracts %}
+            <li>{{ c.group.full_name }} — зараз {{ c.monthly_amount|floatformat:"0g" }} ₴/міс</li>
+          {% endfor %}
+        </ul>
+        <p class="mb-0 text-muted">Учень лишається в тих самих групах. Змінюється лише тариф з вибраної дати:
+          місяці до неї — за ціною пакета, після — за новим тарифом. Оплати не зникають.</p>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <form method="post" class="card card-body shadow-sm" novalidate>
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="alert alert-danger py-2 small">{{ form.non_field_errors|join:" " }}</div>{% endif %}
+      {% for field in form %}
+        <div class="mb-3">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+          {% for e in field.errors %}<div class="small text-danger">{{ e }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+      <button type="submit" class="btn btn-warning"><i class="bi bi-check2-circle"></i> Перевести</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -62,6 +62,10 @@
           <a class="nav-link {% if url_name == 'finance' %}active{% endif %}"
              href="{% url 'school:finance' %}"><i class="bi bi-cash-coin"></i> Фінанси</a>
         </li>
+        <li class="nav-item">
+          <a class="nav-link {% if url_name == 'tariff_list' %}active{% endif %}"
+             href="{% url 'school:tariff_list' %}"><i class="bi bi-tags"></i> Тарифи</a>
+        </li>
         {% endif %}
       </ul>
       <ul class="navbar-nav align-items-lg-center">

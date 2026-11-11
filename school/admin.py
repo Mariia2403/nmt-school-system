@@ -181,7 +181,7 @@ class StudentAdmin(admin.ModelAdmin):
 class TariffAdmin(admin.ModelAdmin):
     save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
     list_display = [
-        "name", "monthly_price", "lessons_per_month", "has_guarantee",
+        "name", "monthly_price", "subjects_count", "lessons_per_month", "has_guarantee",
         "guarantee_min_score", "refund_pct", "is_active",
     ]
     list_filter = ["has_guarantee", "is_active"]

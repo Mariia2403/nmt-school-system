@@ -18,7 +18,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import EnrollmentForm, StudentForm
+from .forms import EnrollmentForm, StudentForm, SwitchTariffForm
 from .access import (
     ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
     get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
@@ -423,25 +423,34 @@ def student_detail(request, pk):
         "unpaid_total": unpaid_total,
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         "today": today,  # default date in the pause / leave forms
+        "packages": student_packages(student),
     }
     return render(request, "school/student_detail.html", context)
 
 
-def enrollment_summary(contract):
-    """Short text about a new contract for the success message:
-    "Математика · група 1 (Стандарт, 2 400 ₴/міс)"."""
-    if contract.payment_plan == Contract.PaymentPlan.PREPAID:
-        total = contract.invoices.aggregate(s=Sum("amount"))["s"] or Decimal("0")
+def enrollment_summary(contracts):
+    """Short text about new contracts for the success message:
+    "Математика · група 1 (Стандарт, 2 400 ₴/міс)" or
+    "Пакет «3 предмети» (6 000 ₴/міс): Математика · група 1, Історія України · група 1, ..."."""
+    first = contracts[0]
+    if first.payment_plan == Contract.PaymentPlan.PREPAID:
+        total = Invoice.objects.filter(contract__in=contracts).aggregate(s=Sum("amount"))["s"] or Decimal("0")
         money = f"весь курс {total:,.0f} ₴".replace(",", " ")
     else:
-        money = f"{contract.monthly_amount():,.0f} ₴/міс".replace(",", " ")
-    return f"{contract.group.full_name} ({contract.tariff.name}, {money})"
+        money = f"{sum(c.monthly_amount() for c in contracts):,.0f} ₴/міс".replace(",", " ")
+    if first.tariff.is_package:
+        groups = ", ".join(c.group.full_name for c in contracts)
+        return f"{first.tariff.name} ({money}): {groups}"
+    return f"{first.group.full_name} ({first.tariff.name}, {money})"
 
 
 def enrollment_prices():
     """Data for the live "До сплати" line in the form (JavaScript):
-    tariff prices and group dates. Without amounts of any real person."""
-    tariffs = {str(t.pk): float(t.monthly_price) for t in Tariff.objects.filter(is_active=True)}
+    tariff prices, how many subjects a tariff has, group dates. No data of real people."""
+    tariffs = {
+        str(t.pk): {"price": float(t.monthly_price), "subjects": t.subjects_count}
+        for t in Tariff.objects.filter(is_active=True)
+    }
     groups = {
         str(g.pk): {"start": g.start_date.isoformat(), "end": g.end_date.isoformat() if g.end_date else ""}
         for g in StudyGroup.objects.filter(end_date__gte=timezone.localdate())
@@ -452,7 +461,7 @@ def enrollment_prices():
 def enrollment_initial(group_id):
     """Start values for "Записати в групу": the group from the link and its start date."""
     today = timezone.localdate()
-    initial = {"start_date": today}
+    initial = {"start_date": today, "payment_plan": Contract.PaymentPlan.MONTHLY, "discount_pct": 0}
     group = StudyGroup.objects.filter(pk=group_id).first() if str(group_id).isdigit() else None
     if group:
         initial["group"] = group.pk
@@ -462,34 +471,27 @@ def enrollment_initial(group_id):
 
 @admin_page
 def student_create(request):
-    """Page "Новий учень": the student, the parents and 1-2 groups in ONE form.
-    Before: the admin panel, the start date by hand, full and finished groups in the list."""
+    """Page "Новий учень": the student, the parents and 1-2 tariffs (a tariff = one subject
+    or a package of 3-4 subjects) in ONE form. After saving -> the student card."""
     group_id = request.GET.get("group", "")
     if request.method == "POST":
         student_form = StudentForm(request.POST)
-        first = EnrollmentForm(request.POST, prefix="g1", student=Student())
-        # The second group is not required: if nothing was changed in it, Django skips it
+        first = EnrollmentForm(request.POST, prefix="g1", student=Student(), initial=enrollment_initial(""))
+        # The second block is not required: if nothing was changed in it, Django skips it
         second = EnrollmentForm(request.POST, prefix="g2", student=Student(), empty_permitted=True,
                                 use_required_attribute=False, initial=enrollment_initial(""))
         forms_ok = all([student_form.is_valid(), first.is_valid(), second.is_valid()])
-        # The same group in both blocks: show it at once, together with other errors
-        first_group = first.cleaned_data.get("group") if hasattr(first, "cleaned_data") else None
-        second_group = second.cleaned_data.get("group") if hasattr(second, "cleaned_data") else None
-        if second.has_changed() and first_group and first_group == second_group:
-            second.add_error("group", "Ця група вже вибрана вище.")
+        # The same subject in both blocks: show it at once, together with other errors
+        if second.has_changed() and first.subject_ids() & second.subject_ids():
+            second.add_error("group", "Цей предмет уже є в першому блоці. Один предмет — лише один раз.")
             forms_ok = False
         if forms_ok:
             # atomic: the student and the contracts are saved together, or nothing is saved
             with transaction.atomic():
                 student = student_form.save()
-                lines = []
-                for form in [first, second]:
-                    if form is second and not second.has_changed():
-                        continue
-                    contract = form.save(commit=False)
-                    contract.student = student
-                    contract.save()  # save() also creates the invoices
-                    lines.append(enrollment_summary(contract))
+                lines = [enrollment_summary(first.save(student))]
+                if second.has_changed():
+                    lines.append(enrollment_summary(second.save(student)))
             messages.success(request, f"Учня {student} додано і записано: " + "; ".join(lines) + ".")
             return redirect("school:student_detail", pk=student.pk)
         messages.error(request, "Перевірте поля, позначені червоним.")
@@ -510,16 +512,19 @@ def student_create(request):
 @admin_page
 def enroll(request):
     """Page "Записати в групу" for a student who already exists.
-    From the student card (?student=5) the student is known, from a group page (?group=3) the group is known."""
+    From the student card (?student=5) the student is known, from a group page (?group=3) the group is known.
+    With a package tariff the admin chooses 3-4 groups; a subject the student already has in the
+    same group moves into the package."""
     student = Student.objects.filter(pk=request.GET.get("student") or 0).first()
     group_id = request.GET.get("group", "")
     if request.method == "POST":
-        form = EnrollmentForm(request.POST, student=student)
+        form = EnrollmentForm(request.POST, student=student, initial=enrollment_initial(group_id))
         if form.is_valid():
+            who = student or form.cleaned_data["student"]
             with transaction.atomic():
-                contract = form.save()  # save() also creates the invoices
-            messages.success(request, f"{contract.student} записано: {enrollment_summary(contract)}.")
-            return redirect("school:student_detail", pk=contract.student_id)
+                contracts = form.save(who)
+            messages.success(request, f"{who} записано: {enrollment_summary(contracts)}.")
+            return redirect("school:student_detail", pk=who.pk)
         messages.error(request, "Перевірте поля, позначені червоним.")
     else:
         form = EnrollmentForm(student=student, initial=enrollment_initial(group_id))
@@ -532,6 +537,107 @@ def enroll(request):
         "prices": enrollment_prices(),
     }
     return render(request, "school/enroll.html", context)
+
+
+def student_packages(student):
+    """Packages of a student: [{"tariff", "contracts", "complete"}].
+    A package is complete when it has as many open subjects as the tariff says."""
+    packages = {}
+    for contract in (
+        student.contracts.filter(status__in=Contract.OPEN_STATUSES, tariff__subjects_count__gt=1)
+        .select_related("tariff", "group__subject")
+    ):
+        row = packages.setdefault(contract.tariff_id, {"tariff": contract.tariff, "contracts": []})
+        row["contracts"].append(contract)
+    for row in packages.values():
+        row["complete"] = len(row["contracts"]) >= row["tariff"].subjects_count
+        row["month_money"] = sum((c.monthly_amount() for c in row["contracts"]), Decimal("0"))
+    return list(packages.values())
+
+
+@admin_page
+def package_break(request, pk, tariff_id):
+    """The student left one subject of a package (rule "Б"): the other subjects of this package
+    move to a tariff for one subject. Default: from the 1st day of the next month."""
+    student = get_object_or_404(Student, pk=pk)
+    tariff = get_object_or_404(Tariff, pk=tariff_id)
+    contracts = list(
+        student.contracts.filter(tariff=tariff, status__in=Contract.OPEN_STATUSES).select_related("group__subject")
+    )
+    if not contracts:
+        messages.info(request, "У цьому пакеті вже немає предметів.")
+        return redirect("school:student_detail", pk=student.pk)
+
+    if request.method == "POST":
+        form = SwitchTariffForm(request.POST)
+        if form.is_valid():
+            new_tariff, from_day = form.cleaned_data["tariff"], form.cleaned_data["from_day"]
+            try:
+                with transaction.atomic():
+                    moved = [c.switch_tariff(new_tariff, max(from_day, c.start_date)) for c in contracts]
+            except ValidationError as error:
+                messages.error(request, " ".join(error.messages))
+            else:
+                messages.success(
+                    request,
+                    f"З {from_day:%d.%m.%Y} на тарифі «{new_tariff.name}»: "
+                    + ", ".join(c.group.full_name for c in moved)
+                    + ". Попередні місяці лишились за ціною пакета.",
+                )
+                return redirect("school:student_detail", pk=student.pk)
+    else:
+        form = SwitchTariffForm(initial={"from_day": next_month(timezone.localdate())})
+
+    context = {"student": student, "tariff": tariff, "contracts": contracts, "form": form}
+    return render(request, "school/package_break.html", context)
+
+
+@admin_page
+def tariff_list(request):
+    """Page "Тарифи": what is in every tariff, how much it costs and who studies on it.
+    Money of every contract = month price with the discount of this contract."""
+    tariffs = list(Tariff.objects.order_by("-is_active", "monthly_price"))
+    stats = {
+        t.pk: {"active": 0, "paused": 0, "students": set(), "month_money": Decimal("0"), "subjects": {}}
+        for t in tariffs
+    }
+    contracts = (
+        Contract.objects.filter(status__in=Contract.OPEN_STATUSES)
+        .select_related("tariff", "group__subject")
+    )
+    for contract in contracts:
+        row = stats[contract.tariff_id]
+        # People, not contracts: one student can have 2 contracts on one tariff (2 subjects).
+        # The same rule as the tariff filter on the Students page (open contracts).
+        row["students"].add(contract.student_id)
+        if contract.status == Contract.Status.ACTIVE:
+            row["active"] += 1
+            row["month_money"] += contract.monthly_amount()
+            subject = contract.group.subject.name
+            row["subjects"][subject] = row["subjects"].get(subject, 0) + 1
+        else:
+            row["paused"] += 1
+
+    for tariff in tariffs:
+        row = stats[tariff.pk]
+        tariff.active_count = row["active"]
+        tariff.student_count = len(row["students"])
+        tariff.paused_count = row["paused"]
+        tariff.month_money = row["month_money"]
+        tariff.subjects = sorted(row["subjects"].items())
+        # Price of one lesson of one subject: we use it for months that are not full
+        # (see Contract.month_charge). A package: the price of one subject / lessons.
+        tariff.lesson_price = tariff.subject_price / max(tariff.lessons_per_month, 1)
+
+    context = {
+        "active_tariffs": [t for t in tariffs if t.is_active and not t.is_package],
+        "packages": [t for t in tariffs if t.is_active and t.is_package],
+        "old_tariffs": [t for t in tariffs if not t.is_active],
+        "total_contracts": sum(t.active_count for t in tariffs),
+        "total_students": Student.objects.active().count(),
+        "total_money": sum((t.month_money for t in tariffs), Decimal("0")),
+    }
+    return render(request, "school/tariff_list.html", context)
 
 
 @admin_page
@@ -566,6 +672,14 @@ def contract_action(request, pk, action):
                 refund = contract.terminate(day)
                 text = (f"«{group}»: договір розірвано, останній день — {day:%d.%m.%Y}. "
                         "Неоплачені рахунки після цієї дати прибрано.")
+                if contract.package_mates().exists():
+                    # Rule "Б": the package is not complete anymore -> the other subjects need their own tariff
+                    messages.warning(
+                        request,
+                        f"{contract.tariff.name} тепер неповний. За правилом школи решта предметів "
+                        "з наступного місяця переходить на окремий тариф — натисніть «Перевести на окремий тариф» "
+                        "у картці учня.",
+                    )
             else:
                 return back
     except ValidationError as error:
