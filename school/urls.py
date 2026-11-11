@@ -43,6 +43,8 @@ urlpatterns = [
     # Buttons of the administrator on the lesson page: cancel / move / another teacher
     path("lessons/<int:pk>/<str:action>/", views.lesson_action, name="lesson_action"),
     path("debts/call-list/", views.call_list, name="call_list"),
+    # "Записати дзвінок": the result of a call to the parents of this student
+    path("debts/call-list/<int:pk>/call/", views.call_record, name="call_record"),
     # Money of the school. The month is in the address: /finance/?month=2026-10
     path("finance/", views.finance, name="finance"),
     # What is in every tariff, the price and who studies on it (only the administrator)

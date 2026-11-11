@@ -20,6 +20,10 @@
     <a href="{% url 'school:group_tests' group.pk %}" class="btn btn-outline-primary btn-sm">
       <i class="bi bi-clipboard-check"></i> Тести і бали
     </a>
+    <!-- Jump to the lessons block (it is below the list of students) -->
+    <a href="#lessons" class="btn btn-outline-primary btn-sm">
+      <i class="bi bi-calendar-week"></i> Заняття
+    </a>
   {% if is_school_admin %}
       <!-- Enroll a student (who exists or a new one) into this group -->
       {% if free > 0 %}
@@ -169,7 +173,7 @@
   </div>
 </div>
 
-<div class="row g-3">
+<div class="row g-3" id="lessons" style="scroll-margin-top: 1rem;">
   <!-- Next lessons -->
   <div class="col-lg-5">
     <div class="card shadow-sm h-100">

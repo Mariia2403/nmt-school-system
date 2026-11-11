@@ -21,13 +21,13 @@ from django.urls import reverse
 from django.utils import timezone
 
 from . import importing
-from .forms import EnrollmentForm, StudentForm, SwitchTariffForm, TestForm
+from .forms import DebtCallForm, EnrollmentForm, StudentForm, SwitchTariffForm, TestForm
 from .access import (
     ADMIN_GROUP, LoginError, admin_page, check_password, create_admin_login, create_teacher_login,
     get_teacher, groups_for, is_admin, lessons_for, staff_page, students_for, subjects_for, suggest_username,
 )
 from .models import (
-    Attendance, Contract, ContractPause, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
+    Attendance, Contract, ContractPause, DebtCall, Expense, Invoice, Lesson, Payment, Refund, Salary, Student, StudyGroup, Subject,
     Tariff, Teacher, Test, TestResult, lesson_conflicts, months_between, next_month,
 )
 
@@ -427,6 +427,8 @@ def student_detail(request, pk):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         "today": today,  # default date in the pause / leave forms
         "packages": student_packages(student),
+        # Calls to parents about debts (only the administrator sees them)
+        "debt_calls": list(student.debt_calls.select_related("user")[:10]) if admin else [],
     }
     return render(request, "school/student_detail.html", context)
 
@@ -1479,21 +1481,72 @@ def lesson_action(request, pk, action):
 
 # ───────────────────────── Debts ─────────────────────────
 
+def last_calls(student_ids, since):
+    """The last call (after `since`) for every student: {student_id: DebtCall}."""
+    calls = {}
+    for call in (DebtCall.objects.filter(student_id__in=student_ids, called_at__gte=since)
+                 .select_related("user").order_by("called_at")):
+        calls[call.student_id] = call  # ordered by time, so the last one stays
+    return calls
+
+
 @admin_page
 def call_list(request):
-    """The list "to call parents": students with an overdue debt."""
+    """The list "to call parents": students with an overdue debt.
+    Order: first who must be called now (longest overdue), then who was already called today,
+    at the end - parents who promised to pay and their day has not come yet."""
     today = timezone.localdate()
     rows = debtors_to_call(today)
     blocked = no_access_ids(today)
+    # Calls only after the oldest unpaid due date matter: older calls were about old debts
+    oldest = min((r["oldest_due"] for r in rows), default=today)
+    since = timezone.make_aware(datetime.combine(oldest, datetime.min.time()))
+    calls = last_calls([r["student"].pk for r in rows], since)
+
     for row in rows:
         row["no_access"] = row["student"].pk in blocked
+        call = calls.get(row["student"].pk)
+        if call and timezone.localtime(call.called_at).date() < row["oldest_due"]:
+            call = None  # the call was before this debt
+        row["call"] = call
+        row["promised"] = bool(call and call.promise_is_active(today))
+        # The parents promised, the day passed, but the debt is still here
+        row["broken_promise"] = bool(call and call.result == DebtCall.Result.PROMISED and not row["promised"])
+        row["called_today"] = bool(call and timezone.localtime(call.called_at).date() == today)
+        row["wait"] = 2 if row["promised"] else 1 if row["called_today"] else 0
+    rows.sort(key=lambda r: r["wait"])  # sort() keeps the old order inside every part
+
     context = {
         "today": today,
         "rows": rows,
         "total_debt": sum((r["debt"] for r in rows), Decimal("0")),
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
+        "to_call_count": sum(1 for r in rows if r["wait"] == 0),
+        "called_today_count": sum(1 for r in rows if r["called_today"]),
+        "promised_count": sum(1 for r in rows if r["promised"]),
+        "call_form": DebtCallForm(),
+        "results": DebtCall.Result,
     }
     return render(request, "school/call_list.html", context)
+
+
+@admin_page
+def call_record(request, pk):
+    """Button "Записати дзвінок" (a form in a window on the page "До дзвінка")."""
+    student = get_object_or_404(Student, pk=pk)
+    if request.method != "POST":
+        return redirect("school:call_list")
+    form = DebtCallForm(request.POST, student=student, user=request.user)
+    if form.is_valid():
+        call = form.save()
+        text = f"Дзвінок записано: {student} — {call.get_result_display().lower()}"
+        if call.promised_date:
+            text += f" до {call.promised_date:%d.%m.%Y}. До цієї дати учень буде внизу списку"
+        messages.success(request, text + ".")
+    else:
+        errors = [e for field_errors in form.errors.values() for e in field_errors]
+        messages.error(request, f"Дзвінок не записано ({student}): " + " ".join(errors))
+    return redirect(reverse("school:call_list") + f"#student-{student.pk}")
 
 
 # ───────────────────────── Finance ─────────────────────────

@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from school.access import ADMIN_GROUP, create_teacher_login, setup_role_groups
 from school.models import (
-    Attendance, Contract, ContractPause, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
+    Attendance, Contract, ContractPause, ConversionRow, ConversionTable, DebtCall, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
 )
 
@@ -183,6 +183,7 @@ class Command(BaseCommand):
         self.create_salaries()
         self.create_expenses()
         self.create_demo_logins()
+        self.create_debt_calls()
         self.print_summary()
 
     # ───────────────────────── Steps ─────────────────────────
@@ -690,6 +691,43 @@ class Command(BaseCommand):
             user.save()
             self.logins.append(user.username)
 
+    def create_debt_calls(self):
+        """Calls to parents of debtors (page "До дзвінка"), so the page shows every case:
+        not called yet, no answer, called today, promised to pay, a broken promise."""
+        from school.views import debtors_to_call  # the same list as on the page
+
+        director = get_user_model().objects.get(username=DEMO_ADMIN)
+        now = timezone.now()
+        calls = []
+        for row in debtors_to_call(self.today):
+            first_day = max(row["oldest_due"], self.today - timedelta(days=10))
+            days_ago = random.randint(0, max(0, (self.today - first_day).days))
+            called_at = timezone.make_aware(datetime.combine(self.today - timedelta(days=days_ago), time(random.randint(10, 18), random.choice([0, 15, 30, 45]))))
+            if called_at > now:
+                called_at = now - timedelta(minutes=random.randint(5, 60))
+            call = DebtCall(student=row["student"], called_at=called_at, user=director)
+            luck = random.random()
+            if luck < 0.3:
+                continue  # not called yet
+            elif luck < 0.55:
+                call.result = DebtCall.Result.NO_ANSWER
+            elif luck < 0.8:
+                call.result = DebtCall.Result.PROMISED
+                call.promised_date = self.today + timedelta(days=random.randint(1, 7))
+                call.called_at = now - timedelta(days=random.randint(0, 2), hours=1)
+                call.comment = random.choice(["Сплатять після зарплати", "Тато переведе на картку", ""])
+            elif luck < 0.9:
+                # Promised, the day passed, but no money: the student is back at the top
+                call.result = DebtCall.Result.PROMISED
+                call.called_at = now - timedelta(days=6)
+                call.promised_date = self.today - timedelta(days=2)
+                call.comment = "Обіцяли до кінця тижня"
+            else:
+                call.result = DebtCall.Result.REACHED
+                call.comment = "Нагадали про оплату, перезвонять"
+            calls.append(call)
+        DebtCall.objects.bulk_create(calls)  # bulk_create: clean() is not called, the data is checked above
+
     def print_summary(self):
         rows = [
             ("Предмети", Subject), ("Таблиці переведення", ConversionTable), ("Викладачі", Teacher), ("Тарифи", Tariff), ("Учні", Student),
@@ -697,7 +735,7 @@ class Command(BaseCommand):
             ("Договори", Contract), ("Заняття", Lesson),
             ("Відвідуваність", Attendance), ("Тести", Test), ("Результати тестів", TestResult),
             ("Рахунки", Invoice), ("Оплати", Payment), ("Повернення", Refund),
-            ("Зарплати", Salary), ("Витрати", Expense),
+            ("Зарплати", Salary), ("Витрати", Expense), ("Дзвінки боржникам", DebtCall),
         ]
         self.stdout.write(self.style.SUCCESS("Тестові дані створено:"))
         for label, model in rows:

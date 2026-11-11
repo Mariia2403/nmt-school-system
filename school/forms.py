@@ -2,6 +2,7 @@
 Forms of the website (not the admin).
 StudentForm    - data of a new student and parents.
 EnrollmentForm - "Записати в групу": one contract (group, tariff, plan, discount, start date).
+DebtCallForm   - "Записати дзвінок" on the page "До дзвінка".
 Django forms check the data AND call the model checks (Contract.clean): free places,
 old tariff, start before the group, etc. So the rules are the same as in the admin.
 """
@@ -10,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Count, Q
 from django.utils import timezone
 
-from .models import Contract, Student, StudyGroup, Tariff, Test
+from .models import Contract, DebtCall, Student, StudyGroup, Tariff, Test
 
 
 class BootstrapMixin:
@@ -268,3 +269,24 @@ class TestForm(BootstrapMixin, forms.ModelForm):
     def save(self, commit=True):
         self.instance.group = None if self.cleaned_data.get("for_all_groups") else self.group
         return super().save(commit)
+
+
+class DebtCallForm(BootstrapMixin, forms.ModelForm):
+    """"Записати дзвінок": the result of a call to parents.
+    The student, the time and who called are set by the view, not by the form."""
+
+    class Meta:
+        model = DebtCall
+        fields = ["result", "promised_date", "comment"]
+        widgets = {
+            "result": forms.RadioSelect,
+            "promised_date": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
+            "comment": forms.TextInput(attrs={"placeholder": "Наприклад: тато заплатить після зарплати"}),
+        }
+
+    def __init__(self, *args, student=None, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.instance.student = student
+        self.instance.user = user
+        self.add_bootstrap()
+        self.fields["result"].widget.attrs["class"] = "form-check-input"

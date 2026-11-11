@@ -12,12 +12,13 @@
 </div>
 <p class="text-muted mb-3">
   Учні, у яких оплата прострочена понад {{ overdue_days }} дн. Станом на {{ today|date:"d.m.Y" }}.
-  Першими — ті, хто прострочив найдовше.
+  Угорі — кому дзвонити зараз (найдовша прострочка першою); нижче — кому вже дзвонили сьогодні
+  і хто обіцяв сплатити.
 </p>
 
 {% if rows %}
 <div class="row g-3 mb-3">
-  <div class="col-sm-6 col-lg-3">
+  <div class="col-6 col-lg-3">
     <div class="card stat-card shadow-sm border-danger h-100">
       <div class="card-body">
         <div class="text-muted small">Боржників</div>
@@ -25,11 +26,29 @@
       </div>
     </div>
   </div>
-  <div class="col-sm-6 col-lg-3">
+  <div class="col-6 col-lg-3">
     <div class="card stat-card shadow-sm border-danger h-100">
       <div class="card-body">
         <div class="text-muted small">Прострочено разом</div>
         <div class="display-6 text-danger">{{ total_debt|floatformat:"0g" }} ₴</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small">Треба подзвонити</div>
+        <div class="display-6">{{ to_call_count }}</div>
+        <div class="small text-muted">сьогодні вже дзвонили: {{ called_today_count }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body">
+        <div class="text-muted small">Обіцяли сплатити</div>
+        <div class="display-6 text-success">{{ promised_count }}</div>
+        <div class="small text-muted">чекаємо до обіцяної дати</div>
       </div>
     </div>
   </div>
@@ -41,30 +60,35 @@
       <thead class="table-light">
         <tr>
           <th>Учень</th>
-          <th>Групи</th>
           <th>Батьки</th>
-          <th>Телефон батьків</th>
-          <th>Телефон учня</th>
           <th class="text-end">Борг</th>
           <th class="text-end">Прострочено</th>
+          <th>Останній дзвінок</th>
           <th class="d-print-none"></th>
         </tr>
       </thead>
       <tbody>
         {% for row in rows %}
-          <tr>
+          {% ifchanged row.wait %}
+            {% if row.wait == 1 %}
+              <tr class="table-light"><td colspan="6" class="small fw-semibold text-muted"><i class="bi bi-check2"></i> Сьогодні вже дзвонили</td></tr>
+            {% elif row.wait == 2 %}
+              <tr class="table-light"><td colspan="6" class="small fw-semibold text-muted"><i class="bi bi-hourglass-split"></i> Обіцяли сплатити — чекаємо до дати</td></tr>
+            {% endif %}
+          {% endifchanged %}
+          <tr id="student-{{ row.student.pk }}" class="{% if row.wait %}text-muted{% endif %}">
             <td>
               <a href="{% url 'school:student_detail' row.student.pk %}" class="fw-semibold text-decoration-none">
                 {{ row.student.last_name }} {{ row.student.first_name }}
               </a>
+              <div>
+                {% for name in row.groups %}
+                  <span class="badge text-bg-light border">{{ name }}</span>
+                {% endfor %}
+              </div>
             </td>
-            <td>
-              {% for name in row.groups %}
-                <span class="badge text-bg-light border">{{ name }}</span>
-              {% endfor %}
-            </td>
-            <td>{{ row.student.parent_name|default:"—" }}</td>
             <td class="text-nowrap">
+              <div class="small">{{ row.student.parent_name|default:"—" }}</div>
               {% if row.student.parent_phone %}
                 <!-- tel: opens the phone app on a phone or a laptop -->
                 <a href="tel:{{ row.student.parent_phone }}" class="text-decoration-none">
@@ -73,11 +97,9 @@
               {% else %}
                 <span class="text-danger small">немає телефону</span>
               {% endif %}
-            </td>
-            <td class="text-nowrap">
               {% if row.student.phone %}
-                <a href="tel:{{ row.student.phone }}" class="text-decoration-none text-muted">{{ row.student.phone }}</a>
-              {% else %}—{% endif %}
+                <div class="small">учень: <a href="tel:{{ row.student.phone }}" class="text-decoration-none text-muted">{{ row.student.phone }}</a></div>
+              {% endif %}
             </td>
             <td class="text-end text-nowrap">
               <span class="text-danger fw-semibold">{{ row.debt|floatformat:"0g" }} ₴</span>
@@ -88,11 +110,34 @@
               <div class="small text-muted">з {{ row.oldest_due|date:"d.m.Y" }}</div>
               {% if row.no_access %}<div class="small text-danger fw-semibold"><i class="bi bi-slash-circle"></i> без допуску</div>{% endif %}
             </td>
+            <td class="small">
+              {% if row.call %}
+                <div>
+                  <span class="badge {% if row.call.result == 'promised' %}text-bg-success{% elif row.call.result == 'refused' %}text-bg-dark{% elif row.call.result == 'no_answer' %}text-bg-warning{% else %}text-bg-info{% endif %}">
+                    {{ row.call.get_result_display }}{% if row.call.promised_date %} до {{ row.call.promised_date|date:"d.m" }}{% endif %}
+                  </span>
+                  {% if row.broken_promise %}<span class="badge text-bg-danger">обіцянку не виконано</span>{% endif %}
+                </div>
+                <div class="text-muted">{{ row.call.called_at|date:"d.m H:i" }}{% if row.call.user %} · {{ row.call.user.get_full_name|default:row.call.user.username }}{% endif %}</div>
+                {% if row.call.comment %}<div class="text-muted fst-italic">«{{ row.call.comment }}»</div>{% endif %}
+              {% else %}
+                <span class="text-muted">ще не дзвонили</span>
+              {% endif %}
+            </td>
             <td class="text-end d-print-none">
-              <!-- Parents paid after the call -> enter the money right away -->
-              <a href="{% url 'school:student_payment' row.student.pk %}" class="btn btn-success btn-sm text-nowrap">
-                <i class="bi bi-cash-coin"></i> Оплатили
-              </a>
+              <div class="d-flex flex-column gap-1">
+                <button type="button" class="btn btn-outline-primary btn-sm text-nowrap call-button"
+                        data-bs-toggle="modal" data-bs-target="#call-modal"
+                        data-action="{% url 'school:call_record' row.student.pk %}"
+                        data-name="{{ row.student.last_name }} {{ row.student.first_name }}"
+                        data-phone="{{ row.student.parent_phone }}">
+                  <i class="bi bi-telephone-plus"></i> Записати дзвінок
+                </button>
+                <!-- Parents paid after the call -> enter the money right away -->
+                <a href="{% url 'school:student_payment' row.student.pk %}" class="btn btn-success btn-sm text-nowrap">
+                  <i class="bi bi-cash-coin"></i> Оплатили
+                </a>
+              </div>
             </td>
           </tr>
         {% endfor %}
@@ -100,6 +145,73 @@
     </table>
   </div>
 </div>
+
+<!-- One window for all students: JavaScript puts the student and the address of the form -->
+<div class="modal fade" id="call-modal" tabindex="-1" aria-labelledby="call-modal-title" aria-hidden="true">
+  <div class="modal-dialog">
+    <form method="post" class="modal-content" id="call-form">
+      {% csrf_token %}
+      <div class="modal-header">
+        <h2 class="modal-title h5" id="call-modal-title">Дзвінок: <span id="call-name"></span></h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрити"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted mb-2" id="call-phone"></p>
+        <label class="form-label">Результат</label>
+        <div class="mb-3">
+          {% for value, label in results.choices %}
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="result" value="{{ value }}" id="result-{{ value }}" required>
+              <label class="form-check-label" for="result-{{ value }}">{{ label }}</label>
+            </div>
+          {% endfor %}
+        </div>
+        <!-- Only for "Обіцяли сплатити" (JavaScript shows it) -->
+        <div class="mb-3" id="promise-box" hidden>
+          <label class="form-label" for="{{ call_form.promised_date.id_for_label }}">Обіцяли сплатити до</label>
+          {{ call_form.promised_date }}
+          <div class="form-text">До цієї дати учень буде внизу списку. Якщо гроші не прийдуть — повернеться вгору з позначкою «обіцянку не виконано».</div>
+        </div>
+        <label class="form-label" for="{{ call_form.comment.id_for_label }}">Коментар</label>
+        {{ call_form.comment }}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Скасувати</button>
+        <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Записати</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var form = document.getElementById("call-form");
+    var promiseBox = document.getElementById("promise-box");
+    var dateInput = document.getElementById("{{ call_form.promised_date.id_for_label }}");
+
+    // The window is the same for every student: fill it when a button is clicked
+    document.querySelectorAll(".call-button").forEach(function (button) {
+      button.addEventListener("click", function () {
+        form.reset();
+        form.action = button.dataset.action;
+        document.getElementById("call-name").textContent = button.dataset.name;
+        document.getElementById("call-phone").textContent =
+          button.dataset.phone ? "Телефон батьків: " + button.dataset.phone : "Телефону батьків немає";
+        toggle();
+      });
+    });
+
+    // The date is needed only for a promise
+    function toggle() {
+      var promised = form.querySelector('input[name="result"][value="promised"]').checked;
+      promiseBox.hidden = !promised;
+      dateInput.required = promised;
+    }
+    form.querySelectorAll('input[name="result"]').forEach(function (radio) {
+      radio.addEventListener("change", toggle);
+    });
+  })();
+</script>
 {% else %}
   <div class="alert alert-success">
     <i class="bi bi-check-circle"></i> Прострочених боргів немає. Дзвонити нікому не потрібно.

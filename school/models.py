@@ -2024,3 +2024,61 @@ class Salary(models.Model):
     def total(self):
         """Total amount to pay: base amount + bonus."""
         return (self.base_amount or 0) + (self.bonus or 0)
+
+# ───────────────────────── Calls to parents about debts ─────────────────────────
+
+class DebtCall(models.Model):
+    """One call to the parents of a student with an overdue debt (page "До дзвінка").
+    Two helpers see who was already called today and what the parents promised."""
+
+    class Result(models.TextChoices):
+        REACHED = "reached", "Дозвонились"
+        NO_ANSWER = "no_answer", "Не відповідають"
+        PROMISED = "promised", "Обіцяли сплатити"
+        REFUSED = "refused", "Відмова"
+
+    # CASCADE: the calls are a part of the student history
+    student = models.ForeignKey(
+        Student, on_delete=models.CASCADE, related_name="debt_calls", verbose_name="Учень"
+    )
+    called_at = models.DateTimeField("Коли дзвонили", default=timezone.now)
+    result = models.CharField("Результат", max_length=20, choices=Result.choices)
+    # Only for "Обіцяли сплатити": until this day the student goes down in the list
+    promised_date = models.DateField("Обіцяли сплатити до", null=True, blank=True)
+    comment = models.CharField("Коментар", max_length=300, blank=True)
+    # Who called. SET_NULL: if the login is deleted, the call stays.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="debt_calls", verbose_name="Хто дзвонив",
+    )
+
+    class Meta:
+        db_table = "debt_calls"
+        verbose_name = "Дзвінок щодо оплати"
+        verbose_name_plural = "Дзвінки щодо оплати"
+        ordering = ["-called_at"]
+        constraints = [
+            # A promise without a date is useless: we would not know when to call again
+            models.CheckConstraint(
+                condition=Q(result="promised", promised_date__isnull=False) | ~Q(result="promised"),
+                name="debt_calls_promise_has_date",
+                violation_error_message="Вкажіть дату, до якої батьки обіцяли сплатити.",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.student} — {timezone.localtime(self.called_at):%d.%m.%Y %H:%M}: {self.get_result_display()}"
+
+    def clean(self):
+        if self.result == self.Result.PROMISED:
+            if not self.promised_date:
+                raise ValidationError({"promised_date": "Вкажіть дату, до якої батьки обіцяли сплатити."})
+            if self.called_at and self.promised_date < timezone.localtime(self.called_at).date():
+                raise ValidationError({"promised_date": "Дата обіцянки не може бути в минулому."})
+        else:
+            # The date makes sense only for a promise
+            self.promised_date = None
+
+    def promise_is_active(self, today):
+        """Parents promised to pay and the day has not passed yet."""
+        return self.result == self.Result.PROMISED and self.promised_date and self.promised_date >= today

@@ -18,7 +18,7 @@ from django.db.models.functions import Coalesce
 
 from .access import groups_for, is_admin, students_for, subjects_for
 from .models import (
-    Attendance, Contract, ContractPause, ConversionRow, ConversionTable, Expense, GroupSchedule, Invoice, Lesson,
+    Attendance, Contract, ContractPause, ConversionRow, ConversionTable, DebtCall, Expense, GroupSchedule, Invoice, Lesson,
     Payment, Refund, Salary, Student, StudyGroup, Subject, Tariff, Teacher, Test, TestResult,
     check_conversion_rows, parse_conversion_text,
 )
@@ -619,6 +619,19 @@ class RefundAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("contract__student", "contract__group__subject")
+
+
+@admin.register(DebtCall)
+class DebtCallAdmin(admin.ModelAdmin):
+    save_on_top = True  # «Зберегти» buttons also at the top: no need to scroll down
+    list_display = ["called_at", "student", "result", "promised_date", "user", "comment"]
+    list_filter = ["result", "user"]
+    search_fields = ["student__last_name", "student__first_name", "comment"]
+    date_hierarchy = "called_at"
+    autocomplete_fields = ["student"]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("student", "user")
 
 
 @admin.register(Expense)

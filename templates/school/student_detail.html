@@ -368,6 +368,22 @@
       Червоним — прострочено понад {{ overdue_days }} дн. Жовтим — не сплачено, але {{ overdue_days }} дн. після терміну ще не минули.
       Сірим — заплановані рахунки на наступні місяці.
     </p>
+
+    {% if debt_calls %}
+      <!-- Calls to parents about debts (page "До дзвінка") -->
+      <h3 class="h6 mt-4"><i class="bi bi-telephone"></i> Дзвінки щодо оплати</h3>
+      <ul class="list-group">
+        {% for call in debt_calls %}
+          <li class="list-group-item small d-flex flex-wrap justify-content-between gap-2">
+            <span>
+              <strong>{{ call.get_result_display }}</strong>{% if call.promised_date %} до {{ call.promised_date|date:"d.m.Y" }}{% endif %}
+              {% if call.comment %}<span class="text-muted fst-italic"> — «{{ call.comment }}»</span>{% endif %}
+            </span>
+            <span class="text-muted">{{ call.called_at|date:"d.m.Y H:i" }}{% if call.user %} · {{ call.user.get_full_name|default:call.user.username }}{% endif %}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
