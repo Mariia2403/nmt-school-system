@@ -493,6 +493,10 @@ class Command(BaseCommand):
     def make_result(self, test, student, test_day, fail=False):
         """A result with the right scale for the test type.
         bulk_create() does not call save(), so here we convert the score ourselves."""
+        if test.counts_answers:
+            # Topic test with tasks: correct answers -> percent (17 of 20 -> 85%)
+            raw = round(self.percent_for(student, test_day) * test.max_score / 100)
+            return TestResult(test=test, student=student, raw_score=raw, score=test.convert_raw(raw))
         if not test.uses_nmt_scale:
             return TestResult(test=test, student=student, score=self.percent_for(student, test_day))
         table = test.conversion_table
@@ -504,17 +508,19 @@ class Command(BaseCommand):
     def create_tests(self):
         results = []
         for group in self.groups:
+            # (title, type, day, number of tasks): test №1 in percent, test №2 with 20 tasks
             plan = [
-                ("Вхідна діагностика", Test.Kind.DIAGNOSTIC, group.start_date + timedelta(days=3)),
-                ("Тематичний тест №1", Test.Kind.TOPIC, group.start_date + timedelta(days=35)),
+                ("Вхідна діагностика", Test.Kind.DIAGNOSTIC, group.start_date + timedelta(days=3), None),
+                ("Тематичний тест №1", Test.Kind.TOPIC, group.start_date + timedelta(days=35), None),
+                ("Тематичний тест №2", Test.Kind.TOPIC, group.start_date + timedelta(days=56), 20),
             ]
-            for title, kind, day in plan:
+            for title, kind, day, tasks in plan:
                 if day > self.today:
                     continue
-                test = Test.objects.create(subject=group.subject, group=group,
+                test = Test.objects.create(subject=group.subject, group=group, max_score=tasks,
                                            title=f"{title} ({group.full_name})", kind=kind, held_at=day)
                 for student in self.members_on(group, day):
-                    # Diagnostic -> test score + NMT score, topic test -> percent
+                    # Diagnostic -> test score + NMT score, topic test -> percent (or correct answers)
                     results.append(self.make_result(test, student, day))
 
         # School-wide trial NMT for every subject (group is empty) every 3 weeks.

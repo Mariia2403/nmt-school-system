@@ -14,7 +14,10 @@
 
 <!-- What to write: depends on the test type -->
 <div class="alert alert-light border small">
-  {% if field == "raw_score" %}
+  {% if tasks %}
+    <i class="bi bi-info-circle"></i> Впишіть <strong>кількість правильних відповідей</strong> від 0 до {{ tasks }}.
+    Відсоток рахується сам: наприклад, 17 з {{ tasks }} → {% widthratio 17 tasks 100 %}%.
+  {% elif field == "raw_score" %}
     <i class="bi bi-info-circle"></i> Впишіть <strong>тестовий бал</strong> від 0 до {{ table.max_raw }}
     (кількість правильних відповідей). Бал НМТ 100–200 рахується сам за таблицею {{ table.year }} року;
     поріг — {{ table.threshold_raw }}.
@@ -36,8 +39,8 @@
           <tr>
             <th style="width: 3rem;">#</th>
             <th>Учень</th>
-            <th style="width: 11rem;">{% if field == "raw_score" %}Тестовий бал{% elif test.uses_nmt_scale %}Бал НМТ{% else %}Відсоток{% endif %}</th>
-            {% if field == "raw_score" %}<th>Бал НМТ</th>{% endif %}
+            <th style="width: 11rem;">{% if tasks %}Правильних відповідей{% elif field == "raw_score" %}Тестовий бал{% elif test.uses_nmt_scale %}Бал НМТ{% else %}Відсоток{% endif %}</th>
+            {% if field == "raw_score" %}<th>{% if tasks %}Відсоток{% else %}Бал НМТ{% endif %}</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -55,7 +58,7 @@
                 {% if row.error %}<div class="small text-danger">{{ row.error }}</div>{% endif %}
               </td>
               {% if field == "raw_score" %}
-                <!-- Filled by JavaScript from the conversion table -->
+                <!-- Filled by JavaScript: from the conversion table or as a percent -->
                 <td class="nmt-score fw-semibold">{% if row.result %}{{ row.result.score_display }}{% endif %}</td>
               {% endif %}
             </tr>
@@ -78,6 +81,7 @@
     var inputs = Array.prototype.slice.call(document.querySelectorAll(".score-input"));
     var scale = JSON.parse(document.getElementById("nmt-scale").textContent);
     var threshold = {{ threshold|default:"null" }};
+    var tasks = {{ tasks|default:"null" }};
 
     // Enter = go to the next student (not "send the form"), like in Excel
     inputs.forEach(function (input, index) {
@@ -90,14 +94,21 @@
       });
     });
 
-    // NMT tests: show the score 100-200 next to the test score at once
-    if (threshold === null) return;
+    // NMT tests: show the score 100-200 next to the test score at once.
+    // Topic tests with tasks: show the percent (17 of 20 -> 85%).
+    if (threshold === null && tasks === null) return;
     function show(input) {
       var cell = input.closest("tr").querySelector(".nmt-score");
       var value = input.value.trim();
       if (value === "") { cell.textContent = ""; cell.className = "nmt-score"; return; }
       var raw = parseInt(value, 10);
       if (isNaN(raw)) { cell.textContent = "?"; return; }
+      if (tasks !== null) {
+        // The same rounding as on the server: 2 of 3 -> 67%
+        cell.textContent = raw > tasks ? "?" : Math.floor((raw * 200 + tasks) / (2 * tasks)) + "%";
+        cell.className = "nmt-score fw-semibold";
+        return;
+      }
       if (raw < threshold) { cell.textContent = "поріг не подолано"; cell.className = "nmt-score text-danger small"; return; }
       cell.textContent = scale[String(raw)] || "?";
       cell.className = "nmt-score fw-semibold";

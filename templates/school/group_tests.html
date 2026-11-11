@@ -21,7 +21,7 @@
             <div>
               <div class="fw-semibold">{{ t.title }}</div>
               <div class="small text-muted">
-                {{ t.held_at|date:"d.m.Y" }} · {{ t.get_kind_display }}
+                {{ t.held_at|date:"d.m.Y" }} · {{ t.get_kind_display }}{% if t.counts_answers %} · {{ t.max_score }} завдань{% endif %}
                 {% if not t.group_id %}· <span class="badge text-bg-info">для всіх груп</span>{% endif %}
               </div>
             </div>
@@ -64,10 +64,22 @@
       {% endfor %}
       <p class="small text-muted">
         Діагностичний, пробне НМТ і підсумковий — шкала 100–200: вносите тестовий бал (наприклад, 17 з 32),
-        бал НМТ рахується сам. Тематичний — у відсотках.
+        бал НМТ рахується сам. Тематичний — вкажіть кількість завдань, і вноситимете кількість правильних
+        відповідей (17 з 20 → 85%); без кількості завдань — одразу відсотки.
       </p>
       <button type="submit" class="btn btn-primary"><i class="bi bi-arrow-right-circle"></i> Створити і внести бали</button>
     </form>
   </div>
 </div>
+
+<script>
+  // "Кількість завдань" is only for topic tests: hide it for NMT tests
+  (function () {
+    var kind = document.getElementById("{{ form.kind.id_for_label }}");
+    var box = document.getElementById("{{ form.max_score.id_for_label }}").closest(".mb-3");
+    function toggle() { box.classList.toggle("d-none", kind.value !== "topic"); }
+    kind.addEventListener("change", toggle);
+    toggle();
+  })();
+</script>
 {% endblock %}

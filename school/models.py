@@ -746,6 +746,14 @@ class Test(models.Model):
     title = models.CharField("Назва", max_length=150)
     kind = models.CharField("Тип", max_length=20, choices=Kind.choices, default=Kind.TOPIC)
     held_at = models.DateField("Дата проведення")
+    # Topic tests only: how many tasks the test has (for example, 20).
+    # Then the teacher writes the number of correct answers ("17"), and the percent
+    # is calculated (85%). Empty = the teacher writes the percent.
+    max_score = models.PositiveSmallIntegerField(
+        "Кількість завдань", null=True, blank=True, validators=[MinValueValidator(1)],
+        help_text="Лише для тематичних тестів: наприклад, 20. Тоді вписуєте кількість правильних "
+                  "відповідей, а відсоток рахується сам. Порожньо — вписуєте відсоток.",
+    )
 
     # Tests of these types use the official NMT scale (100-200).
     # Topic tests use percent (0-100), because "150 points" for one topic means nothing.
@@ -776,6 +784,30 @@ class Test(models.Model):
             self._table = ConversionTable.for_test(self.subject_id, self.held_at)
         return self._table
 
+    @property
+    def counts_answers(self):
+        """True for a topic test with the number of tasks: the teacher writes correct answers."""
+        return not self.uses_nmt_scale and bool(self.max_score)
+
+    @property
+    def raw_max(self):
+        """Maximum test score (correct answers) or None if the teacher writes the score itself.
+        NMT test with a table -> from the table (32), topic test with tasks -> max_score (20)."""
+        table = self.conversion_table
+        if table is not None:
+            return table.max_raw
+        return self.max_score if self.counts_answers else None
+
+    def convert_raw(self, raw):
+        """Test score -> score: NMT scale from the table, or percent for a topic test.
+        17 of 20 -> 85 (%). The percent is rounded: 2 of 3 -> 67."""
+        table = self.conversion_table
+        if table is not None:
+            return table.convert(raw)
+        if self.counts_answers:
+            return (raw * 200 + self.max_score) // (2 * self.max_score)  # round half up
+        return None
+
     def score_range(self):
         """Allowed score for this test: (min, max)."""
         return (100, 200) if self.uses_nmt_scale else (0, 100)
@@ -787,6 +819,28 @@ class Test(models.Model):
     def clean(self):
         if self.group_id and self.subject_id and self.group.subject_id != self.subject_id:
             raise ValidationError({"group": "Предмет групи не збігається з предметом тесту."})
+
+        if self.max_score and self.uses_nmt_scale:
+            raise ValidationError({
+                "max_score": "Кількість завдань — лише для тематичних тестів. "
+                             "Для НМТ-тестів максимум бере таблиця переведення."
+            })
+
+        # The number of tasks changed, but there are already results
+        if self.pk and self.counts_answers:
+            results = self.results.all()
+            too_big = results.filter(raw_score__gt=self.max_score).count()
+            if too_big:
+                raise ValidationError({
+                    "max_score": f"У {too_big} учня(ів) правильних відповідей більше, ніж {self.max_score}. "
+                                 f"Спершу виправте їхні результати."
+                })
+            only_percent = results.filter(raw_score__isnull=True).count()
+            if only_percent:
+                raise ValidationError({
+                    "max_score": f"{only_percent} результат(ів) уже записано у відсотках без кількості "
+                                 f"правильних відповідей. Видаліть їх або залиште поле порожнім."
+                })
 
         # If somebody changes the type of a test that already has results,
         # the old scores can be wrong for the new scale (for example, 70% -> "70 NMT points").
@@ -804,19 +858,31 @@ class Test(models.Model):
                 })
 
     def recalculate_results(self):
-        """Convert the test scores of all results again (for example, after a fix in the table).
-        Returns how many results changed."""
-        table = self.conversion_table
-        if table is None:
-            return 0
+        """Convert the test scores of all results again: after a fix in the table,
+        or after a change of the number of tasks. Returns how many results changed."""
         changed = 0
         for result in self.results.filter(raw_score__isnull=False):
-            new_score = table.convert(result.raw_score)
+            if self.raw_max is None:
+                # Topic test without tasks now: keep the percent, forget the correct answers
+                if self.uses_nmt_scale:
+                    continue  # NMT test without a table: the score was written by hand
+                result.raw_score = None
+                result.save(update_fields=["raw_score"])
+                changed += 1
+                continue
+            new_score = self.convert_raw(result.raw_score)
             if new_score != result.score:
                 result.score = new_score
                 result.save(update_fields=["score"])
                 changed += 1
         return changed
+
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        super().save(*args, **kwargs)
+        if not is_new:
+            # The number of tasks or the type could change: update the old results
+            self.recalculate_results()
 
 
 class TestResult(models.Model):
@@ -830,7 +896,8 @@ class TestResult(models.Model):
     # For NMT tests the teacher writes only this number, the system finds the score 100-200.
     raw_score = models.PositiveSmallIntegerField(
         "Тестовий бал", null=True, blank=True,
-        help_text="Для НМТ-тестів: кількість тестових балів (наприклад, 17 з 32).",
+        help_text="НМТ-тести: тестовий бал (наприклад, 17 з 32). "
+                  "Тематичні з кількістю завдань: правильні відповіді (наприклад, 17 з 20).",
     )
     # NMT tests: calculated from raw_score (empty = the threshold is not passed).
     # Topic tests: percent 0-100, written by the teacher.
@@ -879,8 +946,8 @@ class TestResult(models.Model):
         """Test score with the maximum: "17 з 32" (or "17" if there is no table)."""
         if self.raw_score is None:
             return "—"
-        table = self.test.conversion_table
-        return f"{self.raw_score} з {table.max_raw}" if table else str(self.raw_score)
+        high = self.test.raw_max
+        return f"{self.raw_score} з {high}" if high else str(self.raw_score)
 
     def _get_test(self):
         # When you add a new test with results on one admin page,
@@ -893,9 +960,10 @@ class TestResult(models.Model):
 
     def _fill_defaults(self):
         test = self._get_test()
-        # NMT test with a table: the score 100-200 always comes from the table
-        if test is not None and self.raw_score is not None and test.conversion_table is not None:
-            self.score = test.conversion_table.convert(self.raw_score)
+        # NMT test with a table -> the score 100-200 from the table;
+        # topic test with tasks -> the percent. The teacher writes only the test score.
+        if test is not None and self.raw_score is not None and test.raw_max is not None:
+            self.score = test.convert_raw(self.raw_score)
 
     def clean(self):
         test = self._get_test()
@@ -903,8 +971,15 @@ class TestResult(models.Model):
             return
         table = test.conversion_table
 
-        if not test.uses_nmt_scale:
-            # Topic test: only percent
+        if test.counts_answers:
+            # Topic test with the number of tasks: correct answers, the percent is calculated
+            if self.raw_score is None:
+                raise ValidationError({"raw_score": f"Вкажіть кількість правильних відповідей (0–{test.max_score})."})
+            if self.raw_score > test.max_score:
+                raise ValidationError({"raw_score": f"У тесті лише {test.max_score} завдань."})
+            self._fill_defaults()
+        elif not test.uses_nmt_scale:
+            # Topic test without tasks: only percent
             if self.raw_score is not None:
                 raise ValidationError({"raw_score": "Для тематичного тесту тестовий бал не потрібен — вкажіть відсоток."})
             if self.score is None:

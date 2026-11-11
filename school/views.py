@@ -1100,15 +1100,17 @@ def group_tests(request, pk):
 def test_scores(request, pk, test_pk):
     """Page "Внести бали": all students of the group in one table, one field per student.
     NMT tests: the test score (for example, 17 of 32) -> the score 100-200 from the table.
-    Topic tests: percent. An empty field = no result (an old result is deleted)."""
+    Topic tests with the number of tasks: correct answers (17 of 20) -> percent (85%).
+    Other topic tests: percent. An empty field = no result (an old result is deleted)."""
     group = group_for_user(request, pk)
     test = get_object_or_404(
         Test.objects.filter(Q(group=group) | Q(group__isnull=True, subject=group.subject)), pk=test_pk
     )
     table = test.conversion_table
-    # What the teacher writes: the test score (NMT with a table) or the score itself
-    field = "raw_score" if table is not None else "score"
-    low, high = (0, table.max_raw) if table is not None else test.score_range()
+    # What the teacher writes: the test score (NMT with a table, topic test with tasks)
+    # or the score itself
+    field = "raw_score" if test.raw_max is not None else "score"
+    low, high = (0, test.raw_max) if field == "raw_score" else test.score_range()
 
     # Students: who studies in the group now, plus who already has a result here (left later)
     results = {r.student_id: r for r in test.results.filter(student__contracts__group=group).distinct()}
@@ -1135,7 +1137,7 @@ def test_scores(request, pk, test_pk):
                 result = result or TestResult(test=test, student=student)
                 setattr(result, field, int(text))
                 if field == "raw_score":
-                    result.score = None  # the score is calculated from the table
+                    result.score = None  # the score is calculated (table or percent)
                 try:
                     result.full_clean()  # the same checks as in the admin
                 except ValidationError as error:
@@ -1177,6 +1179,8 @@ def test_scores(request, pk, test_pk):
         # For the live "→ 165" next to the field (JavaScript): {test score: NMT score}
         "scale": {str(raw): score for raw, score in table.scale.items()} if table is not None else {},
         "threshold": table.threshold_raw if table is not None else None,
+        # For the live "→ 85%" (JavaScript): the number of tasks of a topic test
+        "tasks": test.max_score if test.counts_answers else None,
     }
     return render(request, "school/test_scores.html", context)
 

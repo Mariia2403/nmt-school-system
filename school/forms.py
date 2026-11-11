@@ -240,10 +240,11 @@ class TestForm(BootstrapMixin, forms.ModelForm):
 
     class Meta:
         model = Test
-        fields = ["title", "kind", "held_at"]
+        fields = ["title", "kind", "max_score", "held_at"]
         widgets = {
             "held_at": forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d"),
             "title": forms.TextInput(attrs={"placeholder": "Наприклад: Пробне НМТ №2"}),
+            "max_score": forms.NumberInput(attrs={"placeholder": "Наприклад: 20", "min": 1}),
         }
 
     def __init__(self, *args, group, **kwargs):
@@ -254,6 +255,15 @@ class TestForm(BootstrapMixin, forms.ModelForm):
         self.fields["kind"].initial = Test.Kind.TRIAL
         self.add_bootstrap()
         self.fields["for_all_groups"].widget.attrs["class"] = "form-check-input"
+
+    def clean(self):
+        cleaned = super().clean()
+        # The field "Кількість завдань" is hidden for NMT tests (JavaScript),
+        # so a number left there from a topic test must not give an error
+        if cleaned.get("kind") != Test.Kind.TOPIC:
+            cleaned["max_score"] = None
+            self.instance.max_score = None
+        return cleaned
 
     def save(self, commit=True):
         self.instance.group = None if self.cleaned_data.get("for_all_groups") else self.group
