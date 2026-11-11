@@ -8,45 +8,48 @@
   <span class="text-muted">{{ today|date:"j E Y, l" }}</span>
 </div>
 
-<!-- Main numbers -->
+<!-- Main numbers. Every card is a link: "stretched-link" makes the whole card clickable -->
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm h-100">
+    <div class="card stat-card card-hover shadow-sm h-100">
       <div class="card-body">
         <div class="text-muted small"><i class="bi bi-people"></i> Активні учні</div>
         <div class="display-6">{{ active_students }}</div>
         <div class="small text-muted">з діючим договором</div>
+        <a href="{% url 'school:student_list' %}?status=active" class="stretched-link" title="Відкрити список учнів"></a>
       </div>
     </div>
   </div>
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm h-100">
+    <div class="card stat-card card-hover shadow-sm h-100">
       <div class="card-body">
         <div class="text-muted small"><i class="bi bi-collection"></i> Групи, що навчаються</div>
         <div class="display-6">{{ active_groups }}</div>
+        <div class="small text-muted">склад, розклад, вільні місця</div>
+        <a href="{% url 'school:group_list' %}" class="stretched-link" title="Відкрити групи"></a>
       </div>
     </div>
   </div>
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm h-100 border-success">
+    <div class="card stat-card card-hover shadow-sm h-100 border-success">
       <div class="card-body">
         <div class="text-muted small"><i class="bi bi-cash-stack"></i> Оплати за {{ today|date:"F"|lower }}</div>
         <div class="display-6 text-success">{{ payments_sum|floatformat:"0g" }} ₴</div>
         <div class="small text-muted">{{ payments_count }} оплат</div>
+        <a href="{% url 'school:finance' %}#tab-payments" class="stretched-link" title="Оплати в розділі Фінанси"></a>
       </div>
     </div>
   </div>
   <div class="col-sm-6 col-lg-3">
-    <div class="card stat-card shadow-sm h-100 border-danger">
+    <div class="card stat-card card-hover shadow-sm h-100 border-danger">
       <div class="card-body">
         <div class="text-muted small"><i class="bi bi-exclamation-triangle"></i> Прострочені борги (понад {{ overdue_days }} дн.)</div>
         <div class="display-6 text-danger">{{ total_debt|floatformat:"0g" }} ₴</div>
         <div class="small">
           <span class="text-muted">боржників: {{ debtors_count }}</span>
-          {% if debtors_count %}
-            · <a href="{% url 'school:call_list' %}" class="text-danger">до дзвінка →</a>
-          {% endif %}
+          {% if debtors_count %}<span class="text-danger"> · до дзвінка →</span>{% endif %}
         </div>
+        <a href="{% url 'school:call_list' %}" class="stretched-link" title="Список до дзвінка батькам"></a>
       </div>
     </div>
   </div>
@@ -54,22 +57,52 @@
 
 <div class="row g-3 mb-4">
   <div class="col-md-6">
-    <div class="card shadow-sm h-100">
+    <div class="card card-hover shadow-sm h-100">
       <div class="card-body">
         <div class="text-muted small"><i class="bi bi-receipt"></i> Витрати за {{ today|date:"F"|lower }}</div>
         <div class="h4 mb-0">{{ expenses_sum|floatformat:"0g" }} ₴</div>
+        <a href="{% url 'school:finance' %}#tab-expenses" class="stretched-link" title="Витрати в розділі Фінанси"></a>
       </div>
     </div>
   </div>
   <div class="col-md-6">
-    <div class="card shadow-sm h-100">
+    <div class="card card-hover shadow-sm h-100">
       <div class="card-body">
         <div class="text-muted small"><i class="bi bi-shield-check"></i> Резерв під гарантію (усього)</div>
         <div class="h4 mb-0">{{ reserve_total|floatformat:"0g" }} ₴</div>
+        <a href="{% url 'school:finance' %}#tab-refunds" class="stretched-link" title="Повернення в розділі Фінанси"></a>
       </div>
     </div>
   </div>
 </div>
+
+<!-- Lessons that started but have no marks: the admin reminds the teacher.
+     Shown only if there are such lessons, so it does not take space for nothing. -->
+{% if unmarked_count %}
+<div class="card shadow-sm border-danger mb-4">
+  <div class="card-header bg-white fw-semibold d-flex justify-content-between">
+    <span class="text-danger"><i class="bi bi-journal-x"></i> Не відмічено в журналі: {{ unmarked_count }}</span>
+    <a href="{% url 'school:journal' %}" class="small fw-normal text-decoration-none">Журнал →</a>
+  </div>
+  <ul class="list-group list-group-flush">
+    {% for lesson in unmarked %}
+      <a href="{% url 'school:journal_lesson' lesson.pk %}"
+         class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+        <span>
+          <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> · {{ lesson.group.full_name }}
+          <span class="small text-muted d-block d-sm-inline">— {{ lesson.teacher }}</span>
+        </span>
+        <span class="small text-danger text-nowrap">відмітити →</span>
+      </a>
+    {% endfor %}
+  </ul>
+  {% if unmarked_count > unmarked|length %}
+    <div class="card-footer bg-white small text-muted">
+      Показано {{ unmarked|length }} найстаріших. Решта — у Журналі.
+    </div>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="row g-3">
   <!-- Lessons -->
@@ -81,7 +114,7 @@
       </div>
       <ul class="list-group list-group-flush">
         {% for lesson in today_lessons %}
-          <li class="list-group-item d-flex justify-content-between align-items-center">
+          <li class="list-group-item d-flex justify-content-between align-items-center {% if lesson.needs_marks %}list-group-item-danger{% endif %}">
             <div>
               <a href="{% url 'school:journal_lesson' lesson.pk %}" class="text-decoration-none text-body">
                 <strong>{{ lesson.starts_at|date:"H:i" }}</strong> · {{ lesson.group.full_name }}
@@ -89,20 +122,31 @@
               <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
               <div class="small text-muted">{{ lesson.teacher }}</div>
             </div>
-            <span class="badge text-bg-{% if lesson.status == 'held' %}success{% elif lesson.status == 'cancelled' %}secondary{% else %}primary{% endif %}">
-              {{ lesson.get_status_display }}
-            </span>
+            <!-- Status: what the admin needs to know NOW -->
+            {% if lesson.status == "cancelled" or lesson.status == "rescheduled" %}
+              <span class="badge text-bg-secondary">{{ lesson.get_status_display }}</span>
+            {% elif lesson.needs_marks %}
+              <span class="badge text-bg-danger">не відмічено</span>
+            {% elif lesson.marked %}
+              <span class="badge text-bg-success">Проведене · {{ lesson.present }}/{{ lesson.marked }}</span>
+            {% else %}
+              <span class="badge text-bg-primary">о {{ lesson.starts_at|date:"H:i" }}</span>
+            {% endif %}
           </li>
         {% empty %}
-          <li class="list-group-item text-muted">Сьогодні занять немає.</li>
+          <li class="list-group-item text-muted">
+            Сьогодні занять немає.
+            <div class="small">Заняття з'являються з розкладу групи (сторінка групи → «Оновити заняття за розкладом»).</div>
+          </li>
         {% endfor %}
       </ul>
       <div class="card-header bg-white fw-semibold border-top"><i class="bi bi-calendar-week"></i> Найближчі заняття</div>
       <ul class="list-group list-group-flush">
         {% for lesson in next_lessons %}
           <li class="list-group-item">
-            <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> · {{ lesson.group.full_name }}
-            <span class="text-muted">— {{ lesson.topic|default:"без теми" }}</span>
+            <strong>{{ lesson.starts_at|date:"d.m, D H:i" }}</strong> ·
+            <a href="{% url 'school:group_detail' lesson.group_id %}" class="text-decoration-none">{{ lesson.group.full_name }}</a>
+            <span class="small text-muted d-block">{{ lesson.teacher }}{% if lesson.topic %} — {{ lesson.topic }}{% endif %}</span>
           </li>
         {% empty %}
           <li class="list-group-item text-muted">Запланованих занять немає.</li>

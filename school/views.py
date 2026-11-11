@@ -133,12 +133,12 @@ def dashboard(request):
     total_debt = sum(debts.values(), Decimal("0"))
     top_debtors = sorted(debts.items(), key=lambda item: item[1], reverse=True)[:5]
 
-    # Lessons for today and the next lessons
-    today_lessons = (
-        Lesson.objects.filter(starts_at__date=today)
-        .select_related("group__subject", "teacher")
-        .order_by("starts_at")
-    )
+    # Lessons for today: with marks, to show "не відмічено" for lessons that already started
+    today_lessons = mark_lesson_state(list(with_marks(
+        Lesson.objects.filter(starts_at__date=today).select_related("group__subject", "teacher")
+    ).order_by("starts_at")), now)
+    # All teachers: lessons of the last 30 days without marks (the admin reminds the teachers)
+    unmarked = unmarked_lessons(Lesson.objects.all(), now)
     next_lessons = (
         Lesson.objects.filter(starts_at__gt=now, status=Lesson.Status.PLANNED)
         .exclude(starts_at__date=today)
@@ -160,6 +160,8 @@ def dashboard(request):
         "overdue_days": settings.DEBT_OVERDUE_DAYS,
         "today_lessons": today_lessons,
         "next_lessons": next_lessons,
+        "unmarked": unmarked[:10],
+        "unmarked_count": unmarked.count(),
     }
     return render(request, "school/dashboard.html", context)
 
@@ -169,14 +171,8 @@ def teacher_dashboard(request, teacher):
     today = timezone.localdate()
     now = timezone.now()
     lessons = lessons_for(request.user).select_related("group__subject", "teacher")
-    today_lessons = with_marks(lessons.filter(starts_at__date=today)).order_by("starts_at")
-    for lesson in today_lessons:
-        lesson.needs_marks = (lesson.starts_at <= now and lesson.marked == 0
-                              and lesson.status in [Lesson.Status.PLANNED, Lesson.Status.HELD])
-    unmarked = with_marks(lessons.filter(
-        starts_at__lt=now, starts_at__gte=now - timedelta(days=30),
-        status__in=[Lesson.Status.PLANNED, Lesson.Status.HELD],
-    )).filter(marked=0).order_by("starts_at")
+    today_lessons = mark_lesson_state(list(with_marks(lessons.filter(starts_at__date=today)).order_by("starts_at")), now)
+    unmarked = unmarked_lessons(lessons, now)
     next_lessons = (
         lessons.filter(starts_at__gt=now, status=Lesson.Status.PLANNED)
         .exclude(starts_at__date=today).order_by("starts_at")[:5]
@@ -742,6 +738,28 @@ def with_marks(lessons):
     )
 
 
+def unmarked_lessons(lessons, now, days=30):
+    """Lessons of the last `days` days that already started, were not cancelled,
+    but have no marks at all: the teacher forgot the journal.
+    The same rule for the Journal, the teacher main page and the admin main page."""
+    return with_marks(
+        lessons.filter(
+            starts_at__lt=now, starts_at__gte=now - timedelta(days=days),
+            status__in=[Lesson.Status.PLANNED, Lesson.Status.HELD],
+        ).select_related("group__subject", "teacher")
+    ).filter(marked=0).order_by("starts_at")
+
+
+def mark_lesson_state(lessons, now):
+    """Add lesson.needs_marks: the lesson has started, it was not cancelled, but nobody
+    marked the students. Templates show it as a red "не відмічено" badge."""
+    for lesson in lessons:
+        lesson.is_future = lesson.starts_at > now
+        lesson.needs_marks = (not lesson.is_future and lesson.marked == 0
+                              and lesson.status in [Lesson.Status.PLANNED, Lesson.Status.HELD])
+    return lessons
+
+
 @staff_page
 def journal(request):
     today = timezone.localdate()
@@ -752,19 +770,8 @@ def journal(request):
         lessons_for(request.user).filter(starts_at__date=day)
         .select_related("group__subject", "group__teacher", "teacher")
     ).order_by("starts_at")
-    for lesson in lessons:
-        lesson.is_future = lesson.starts_at > now
-        # A lesson has started, it was not cancelled, but nobody marked the students
-        lesson.needs_marks = (not lesson.is_future and lesson.marked == 0
-                              and lesson.status in [Lesson.Status.PLANNED, Lesson.Status.HELD])
-
-    # Lessons of the last 30 days without any marks: the teacher forgot the journal
-    unmarked = with_marks(
-        lessons_for(request.user).filter(
-            starts_at__lt=now, starts_at__gte=now - timedelta(days=30),
-            status__in=[Lesson.Status.PLANNED, Lesson.Status.HELD],
-        ).select_related("group__subject", "teacher")
-    ).filter(marked=0).order_by("starts_at")
+    mark_lesson_state(lessons, now)
+    unmarked = unmarked_lessons(lessons_for(request.user), now)
 
     context = {
         "day": day,
